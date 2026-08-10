@@ -35,11 +35,14 @@ unable to touch the customer's.
 ```mermaid
 flowchart LR
     subgraph fleet["MSSP fleet repo (this one)"]
-        P["pins + composition"] -->|converge<br/>fleet creds| T
+        P["pins + composition"]
     end
     subgraph cust["Customer repo"]
-        S["acme-* pack source"] -->|their pipeline<br/>customer creds| T["customer tenants<br/>(qa then prod)"]
+        S["acme-* pack source"]
     end
+    T["customer tenants<br/>(qa then prod)"]
+    P -->|"converge<br/>fleet creds"| T
+    S -->|"their pipeline<br/>customer creds"| T
     fleet -. "references ids only<br/>(custom:)" .-> cust
 ```
 

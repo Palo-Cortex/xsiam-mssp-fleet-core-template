@@ -14,12 +14,12 @@ promotion, convergence).
 
 ```mermaid
 flowchart LR
-    A["Step 0<br/>author in dev tenant<br/>(console, raw content)"] --> B["Step 1 — pack PR<br/>Packs/&lt;id&gt;/ + catalog<br/>+ inert dev pin"]
+    A["Step 0 — author<br/>in the dev tenant<br/>(console, raw content)"] --> B["Step 1 — pack PR<br/>Packs/&lt;id&gt;/ + catalog<br/>+ inert dev pin"]
     B -->|merge| R["release.yml publishes<br/>&lt;id&gt;-v1.0.0.zip"]
-    R --> C["Step 2 — promote PR<br/>qa.yml pin + qa tenant extras"]
-    C -->|merge| Q["converge qa —<br/>first real deployment"]
+    R --> C["Step 2 — promote PR<br/>qa.yml pin +<br/>qa tenant extras"]
+    C -->|merge| Q["converge qa<br/>(first real deployment)"]
     Q --> D["Step 3 — QA testing<br/>(qa soak clock runs)"]
-    D --> E["Step 4 — promote PR<br/>prod.yml pin + prod composition"]
+    D --> E["Step 4 — promote PR<br/>prod.yml pin +<br/>prod composition"]
     E -->|"soak + window +<br/>review + approval"| P["converge prod"]
 ```
 

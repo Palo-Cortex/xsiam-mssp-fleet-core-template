@@ -11,8 +11,13 @@ tenants, groups, pins, and one example MSSP-authored pack. Everything runs
 offline out of the box (CI stays green with zero setup), and every example name
 is a placeholder you replace with your own. Start with
 [`docs/getting-started.md`](docs/getting-started.md) to adopt it; this README is
-the operator's map, and [`docs/runbook.md`](docs/runbook.md) covers day-to-day
-tasks.
+the operator's map, [`docs/runbook.md`](docs/runbook.md) covers day-to-day
+tasks, and two lifecycle walkthroughs cover content end to end:
+[`docs/custom-pack-lifecycle.md`](docs/custom-pack-lifecycle.md) for
+MSSP-authored packs (author → package → qa → prod) and
+[`docs/customer-pack-lifecycle.md`](docs/customer-pack-lifecycle.md) for
+customer-owned packs (the second writer — referenced, protected, never
+deployed by the fleet).
 
 > One MSSP = one fleet repo like this. It **consumes** the upstream framework
 > catalog by URL and fetches pinned release zips at deploy time — it never forks
@@ -179,7 +184,7 @@ flowchart LR
 
 1. **Author / bump** a version in `fleet/pins/dev.yml`; merging converges the dev ring. For an **MSSP-authored pack**: bump its `currentVersion` and regenerate the catalog (`mssp_catalog.py --write`) in the pack PR — merging publishes the tagged release zip (`release.yml`) — then flip the pin to the new version. (Fast path while iterating: pin it `local` and every merge to its `Packs/<id>/` source converges dev directly.)
 2. **Promote** with `promote.py` (or the `promote` workflow) → a PR copying the pin into `qa.yml`.
-3. The PR must pass **`ring-gate`**: the version must already be in the source ring (no-skip), have soaked ≥ the policy's `min_soak_days` (measured from git history), and — for prod — merge inside a change window. A `local` pin may **never** enter a gated ring: soak on the sentinel is meaningless while the `Packs/` source keeps changing, so MSSP packs promote as their released versions, exactly like upstream packs.
+3. The PR must pass **`ring-gate`**: the version must already be in the source ring (no-skip), have soaked ≥ the policy's `min_soak_days` (measured from git history; dev → qa soak exempts MSSP-authored packs — dev never runs them — while qa → prod soak applies to every pack), and — for prod — merge inside a change window. A `local` pin may **never** enter a gated ring: soak on the sentinel is meaningless while the `Packs/` source keeps changing, so MSSP packs promote as their released versions, exactly like upstream packs.
 4. **Merge** → `converge` deploys the target ring. Prod runs under the `fleet-prod` Environment (approval + prod-scoped secrets).
 5. **Removal**: delete a pin → convergence orphan-deletes that pack via the XSIAM pack-delete API, but only within the bounded deletable set (upstream catalog ∪ MSSP-authored ids). Marketplace and customer-prefixed packs are never touched.
 6. **Rollback**: revert a pin PR — uploading an older zip over a newer install just works.

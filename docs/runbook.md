@@ -35,6 +35,36 @@ packs) lives in `defaults.yml`/`groups`/`tenants`; versions live per ring in
    `fleet-prod` Environment approval). The artifact is identical across rings;
    only the pin advances.
 
+## Package tenant-authored content (author in dev, validate in qa)
+When custom content is built in the dev tenant's console (tenant-first), the
+dev tenant keeps the raw content and never composes the packaged pack — qa is
+the first ring that actually deploys it. Full worked example with per-step
+file changes: [custom-pack-lifecycle.md](custom-pack-lifecycle.md).
+
+1. Author in the dev tenant, then pull the content down into pack source
+   (`demisto-sdk download -o Packs/<PackId> ...`), set `pack_metadata.json`
+   (id, `currentVersion`), and regenerate the catalog
+   (`python scripts/mssp_catalog.py --write`). PR → merge publishes the
+   release zip (`release.yml`).
+2. In a follow-up PR, pin the version in `fleet/pins/dev.yml` **without
+   composing it on any dev tenant**. This deploys nothing — it is deliberate:
+   the pin must enter at dev because ring-gate's no-skip rule only lets
+   versions reach `qa.yml` by promotion from `dev.yml`. MSSP-authored packs
+   are soak-exempt out of the head ring (soak on an artifact dev never runs is
+   a dead timer), so promotion to qa is immediate regardless of qa's
+   `min_soak_days` — dev soak gates third-party packs only. The qa → prod
+   promotion then soaks normally (qa actually runs the pack), alongside
+   review/sign-off (CODEOWNERS, the `fleet-prod` Environment) and the change
+   window.
+3. Promote (`promote.py --pack <PackId> --to qa`) and, in the same PR, compose
+   the pack on a qa tenant (its `extras:` or a group it subscribes to).
+   Merge → `converge` deploys qa — the first tenant to receive the pack.
+4. The dev tenant intentionally diverges: it holds the content unpacked
+   (console-authored), qa/prod hold it as the pinned pack. Drift never
+   reconciles this — unpacked custom content is not a pack, so the drift job
+   does not see it. Do not later compose the pack on the dev tenant: uploading
+   it over the console originals risks ID collisions.
+
 ## Hold one tenant back
 Set the version under that tenant's `pin_overrides:` (e.g. prodcustomer01 holds
 `soc-optimization-unified: 3.9.4`). It wins over the ring pin for that tenant and
@@ -90,6 +120,9 @@ ring but has no pin is a hard `resolve.py` error, so ring-gate and converge
 fail before anything is removed.
 
 ## Onboard a customer-owned (custom) pack
+Full end-to-end (both repos' responsibilities, qa → prod on the customer
+side, ownership transfer): [customer-pack-lifecycle.md](customer-pack-lifecycle.md).
+
 1. The customer authors it in their overlay repo with the registered prefix
    (e.g. `acme-`) and deploys it with their own credentials.
 2. Reference it here only if useful, under the tenant's `custom:` with

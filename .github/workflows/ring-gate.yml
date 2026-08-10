@@ -1,0 +1,53 @@
+# ============================================================================
+# ring-gate.yml — the required check on every PR that touches fleet manifests
+# ----------------------------------------------------------------------------
+# One path-aware check enforces per-ring promotion policy (no-skip, soak days,
+# change windows) from fleet/policies.yml, plus the fleet half of the namespace
+# contract, a resolve validation that fails on any unpinned pack, and the pytest
+# suite under tests/. Mark this job as a required status check in branch
+# protection.
+#
+# fetch-depth: 0 is required — ring_gate.py measures soak from the git history
+# of the source ring's pin file.
+# ============================================================================
+name: ring-gate
+
+on:
+  pull_request:
+    paths: ["fleet/**", "scripts/**", "tests/**", "Packs/**", "pytest.ini", "mssp_pack_catalog.json"]
+
+permissions:
+  contents: read
+
+jobs:
+  gate:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with: { fetch-depth: 0 }
+      - uses: actions/setup-python@v5
+        with: { python-version: "3.12" }
+      - run: pip install pyyaml pytest
+
+      - name: Tests
+        run: pytest -q
+
+      - name: Resolve validation (every tenant, every ring — fails on unpinned)
+        # Rings are derived from fleet/pins/*.yml; every ring needs ≥1 tenant.
+        run: |
+          for pin in fleet/pins/*.yml; do
+            python scripts/resolve.py --ring "$(basename "$pin" .yml)" --json > /dev/null
+          done
+          echo "all tenants resolve against their ring pins ✓"
+
+      - name: Namespace contract (fleet side)
+        run: python scripts/namespace_lint.py
+
+      - name: MSSP catalog in sync with Packs/ metadata
+        run: python scripts/mssp_catalog.py --check
+
+      - name: Config Overlays (registered List ids, patch shape)
+        run: python scripts/config_overlay_lint.py
+
+      - name: Ring policy
+        run: python scripts/ring_gate.py --base "origin/${{ github.base_ref }}"

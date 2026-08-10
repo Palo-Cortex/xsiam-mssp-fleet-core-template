@@ -1,0 +1,45 @@
+# ============================================================================
+# installed_state.sample.yml  —  DEMO FIXTURE (not real data)
+# ----------------------------------------------------------------------------
+# Stand-in for what deploy_tenant.py / drift_check.py fetch live from a tenant
+# (GET /contentpacks/metadata/installed). Lets you demo drift + orphan handling
+# offline against the example fleet tenants. Seeded conditions:
+#
+#   • devlab01          VirusTotal 2.7.21              -> DRIFT (pinned 2.7.22)
+#   • devlab01          ExamplePack 1.0.0              -> in sync (MSSP-authored
+#                        pack pinned to its released 1.0.0)
+#   • devlab01          soc-framework-manager 1.1.1    -> ORPHAN (no longer pinned)
+#   • devlab01          Base 1.0.0                     -> Marketplace; NEVER deleted
+#   • devlab01          acme-detections 0.4.0          -> customer-owned; NEVER touched
+#   • qacanary01  soc-optimization-unified 3.10.2 -> DRIFT (pinned 3.10.3)
+#   • prodcustomer01 / msspparent                  -> in sync
+#
+# The orphan is in the upstream catalog, so it is inside the bounded deletable
+# set and deploy_tenant.py will delete it (preview with --installed). Base is
+# NOT in the catalog and carries no MSSP ownership, and acme-detections carries
+# a registered customer prefix — both are reported, never deleted.
+# ============================================================================
+
+devlab01:
+  soc-optimization-unified: 3.10.3
+  soc-framework-nist-ir: 1.6.3
+  VirusTotal: 2.7.21                    # <-- DRIFT: behind pinned 2.7.22
+  SocFrameworkMicrosoftDefender: 1.2.13 # financial-endpoint-heavy group, in sync
+  soc-microsoft-entra-id: 1.0.1         # financial-endpoint-heavy group, in sync
+  ExamplePack: 1.0.0                    # MSSP-authored pack, in sync
+  soc-framework-manager: 1.1.1          # <-- ORPHAN: no longer pinned
+  Base: 1.0.0                           # Marketplace pack — never deleted
+  acme-detections: 0.4.0                # customer-owned — never touched
+
+qacanary01:
+  soc-optimization-unified: 3.10.2      # <-- DRIFT: behind pinned 3.10.3
+  soc-framework-nist-ir: 1.6.3
+  VirusTotal: 2.7.22
+
+prodcustomer01:                        # base-only prod tenant, in sync
+  soc-optimization-unified: 3.10.3
+  soc-framework-nist-ir: 1.6.3
+
+msspparent:                         # MSSP parent (mssp ring), in sync
+  soc-optimization-unified: 3.10.3
+  soc-framework-nist-ir: 1.6.3

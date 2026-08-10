@@ -1,0 +1,32 @@
+# ============================================================================
+# pinned_lists.sample.yml  —  DEMO FIXTURE (not real data)
+# ----------------------------------------------------------------------------
+# The BASELINE half of the List-content drift check: the List
+# content the PINNED pack ships, i.e. each `Lists/<ListID>/<ListID>_data.json`
+# inside the release zip a ring's pins resolve to. Keyed by RING, because pins
+# are per ring — the same List can sit at different content in dev and prod.
+#
+# drift_check.py compares live List content (fixtures/lists_state.sample.yml)
+# against `pinned ⊕ Config Overlay`: this baseline deep-merged with the tenant's
+# composed Config Overlay (fleet/config_overlays/defaults.yml ⊕ <tenant>.yml).
+# No tenant carries a Config Overlay yet, so here expected == pinned.
+#
+# All four rings pin soc-optimization-unified 3.10.3 today, so they share one
+# baseline (the anchor below). When a ring's pin moves ahead, give that ring its
+# own block — the whole point of keying by ring.
+# ============================================================================
+
+dev: &v3_10_3
+  SOCFrameworkActions_V3:
+    isolate_host:
+      shadow_mode: true          # destructive — shipped inert by the framework
+      timeout: 300
+    block_indicator:
+      shadow_mode: true
+    enrich_indicator:
+      shadow_mode: false         # read-only — shipped live
+      timeout: 60
+
+qa: *v3_10_3
+prod: *v3_10_3
+mssp: *v3_10_3

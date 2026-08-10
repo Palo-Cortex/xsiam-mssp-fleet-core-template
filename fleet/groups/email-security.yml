@@ -1,0 +1,9 @@
+# Pack IDs only — versions are pinned per ring in fleet/pins/<ring>.yml.
+group: email-security
+description: >
+  Email threat detection bundle. Add to any tenant that ingests Proofpoint TAP
+  and/or Microsoft Defender for Office 365 (email) telemetry.
+
+extras:
+  - SocFrameworkProofPointTap
+  - SocFrameworkMicrosoftEmail

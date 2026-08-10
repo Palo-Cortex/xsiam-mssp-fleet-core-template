@@ -1,0 +1,10 @@
+{
+  "packs": [
+    {
+      "id": "ExamplePack",
+      "version": "1.0.0",
+      "path": "Packs/ExamplePack",
+      "zip_url": "https://github.com/YOUR-ORG/YOUR-FLEET-REPO/releases/download/ExamplePack-v1.0.0/ExamplePack-v1.0.0.zip"
+    }
+  ]
+}

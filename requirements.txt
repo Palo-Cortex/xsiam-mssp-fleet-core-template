@@ -1,0 +1,4 @@
+pyyaml>=6
+demisto-sdk
+pebble<5.2   # demisto-sdk dep; 5.2.x crashes zip-packs pool teardown on py>=3.12
+pytest>=8

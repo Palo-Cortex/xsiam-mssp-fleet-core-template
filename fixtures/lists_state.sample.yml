@@ -1,0 +1,49 @@
+# ============================================================================
+# lists_state.sample.yml  —  DEMO FIXTURE (not real data)
+# ----------------------------------------------------------------------------
+# Stand-in for the LIVE half of the List-content drift check: the framework
+# config Lists as they currently read on each tenant. Same role --state plays
+# for installed pack versions, in the shape {tenant: {list_id: content}}.
+# Pair it with fixtures/pinned_lists.sample.yml:
+#
+#   python scripts/drift_check.py --state fixtures/installed_state.sample.yml \
+#       --lists-state fixtures/lists_state.sample.yml \
+#       --pinned-lists fixtures/pinned_lists.sample.yml
+#
+# Seeded conditions:
+#
+#   • devlab01        isolate_host.shadow_mode false  -> LIST DRIFT: a console
+#                      hand-edit took a destructive action live; the fleet still
+#                      believes it is shadowed
+#   • devlab01        SOCConsoleScratchList           -> unmanaged: neither
+#                      pinned nor overlaid; reported, never deleted
+#   • prodcustomer01  matches the pinned baseline     -> in sync
+#   • qacanary01 / msspparent               -> absent here: not read,
+#                      so they report no List rows at all
+#
+# A tenant listed here but MISSING a fleet-owned List reports LIST MISSING.
+# ============================================================================
+
+devlab01:
+  SOCFrameworkActions_V3:
+    isolate_host:
+      shadow_mode: false                # <-- LIST DRIFT: expected true
+      timeout: 300
+    block_indicator:
+      shadow_mode: true
+    enrich_indicator:
+      shadow_mode: false
+      timeout: 60
+  SOCConsoleScratchList:                # <-- unmanaged: fleet owns neither
+    note: created in the console
+
+prodcustomer01:                        # base-only prod tenant, in sync
+  SOCFrameworkActions_V3:
+    isolate_host:
+      shadow_mode: true
+      timeout: 300
+    block_indicator:
+      shadow_mode: true
+    enrich_indicator:
+      shadow_mode: false
+      timeout: 60

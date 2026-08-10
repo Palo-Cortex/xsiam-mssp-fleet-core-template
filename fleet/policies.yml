@@ -1,0 +1,49 @@
+# ============================================================================
+# policies.yml  —  ring promotion policy (machine-checked, not remembered)
+# ----------------------------------------------------------------------------
+# The single source of truth for HOW content moves between rings. Read by
+# scripts/ring_gate.py (the required PR check) and scripts/promote.py. Human
+# layers sit alongside this: a CODEOWNERS file (not included — add your own)
+# decides WHO reviews each pin file, and GitHub Environments decide WHO clicks
+# deploy.
+#
+# Keys enforced by ring_gate.py: source, min_soak_days, require_change_window,
+# change_windows (plus promotion_order). The require_dry_run and environment
+# keys document the intended GitHub setup but are not machine-enforced — wire
+# the Environment onto the converge job when going live (see the runbook).
+# ============================================================================
+
+# Order content flows through the rings. A pin may only enter a ring from its
+# immediate `source` — no skipping.
+promotion_order: [dev, qa, prod]
+
+rings:
+  mssp:
+    source: null            # standalone MSSP parent ring — NOT in promotion_order,
+    min_soak_days: 0        # so it's never a promote source/target. Pins authored
+    require_dry_run: false   # freely here; ring-gate applies no soak/no-skip check.
+    environment: fleet-mssp
+
+  dev:
+    source: null            # head of the chain — pins are authored/bumped here
+    min_soak_days: 0
+    require_dry_run: false
+    environment: fleet-nonprod
+
+  qa:
+    source: dev             # a qa pin must already exist in dev.yml at that version
+    min_soak_days: 0        # template default: 0 so the demo promotes instantly — raise (e.g. 2) for a real fleet
+    require_dry_run: true
+    environment: fleet-nonprod
+
+  prod:
+    source: qa              # a prod pin must already exist in qa.yml at that version
+    min_soak_days: 5        # counted from when qa.yml first carried that version
+    require_dry_run: true
+    require_change_window: true
+    # Times are UTC. A prod pin change may only MERGE inside one of these windows.
+    change_windows:
+      - days: [Tue, Wed, Thu]
+        start: "14:00"
+        end: "22:00"
+    environment: fleet-prod

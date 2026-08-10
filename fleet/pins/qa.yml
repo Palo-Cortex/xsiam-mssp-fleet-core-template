@@ -1,0 +1,15 @@
+# ============================================================================
+# pins/qa.yml  —  exact pack versions for the QA (canary) ring
+# ----------------------------------------------------------------------------
+# Fed by promotion from dev.yml. A pin may only advance here to a version that
+# already sits in dev.yml (the ring gate enforces no-skip), after the dev soak
+# window. Merging a change here converges only the qa ring.
+#
+# A vendor pin only lands here by promotion from dev (ring-gate enforces
+# no-skip + soak).
+# ============================================================================
+ring: qa
+pins:
+  VirusTotal: 2.7.22
+  soc-optimization-unified: 3.10.3
+  soc-framework-nist-ir: 1.6.3

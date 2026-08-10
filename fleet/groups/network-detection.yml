@@ -1,0 +1,9 @@
+# Pack IDs only — versions are pinned per ring in fleet/pins/<ring>.yml.
+group: network-detection
+description: >
+  Network-layer detection bundle for tenants leaning on NDR / network telemetry
+  (Zscaler ZPA access logs, Check Point NDR).
+
+extras:
+  - SocFrameworkZscalerZPA
+  - soc-checkpoint-ndr

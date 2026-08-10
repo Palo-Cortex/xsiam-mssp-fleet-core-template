@@ -1,0 +1,15 @@
+# EXAMPLE TENANT — replace with your own (see docs/getting-started.md §3).
+# Dev-ring lab tenant. Demonstrates both composition paths: a group
+# subscription (financial-endpoint-heavy bundles its vendor packs) and a direct
+# extra (the MSSP-authored ExamplePack).
+tenant: devlab01
+display_name: Dev Lab 01 (dev)
+ring: dev
+credentials_ref: DEVLAB01
+
+groups:
+  - financial-endpoint-heavy  # every pack the group lists is pinned in fleet/pins/dev.yml
+extras:
+  - ExamplePack               # MSSP-authored; pinned in fleet/pins/dev.yml (flip to 'local' to deploy from Packs/ source)
+pin_overrides: {}
+custom: []

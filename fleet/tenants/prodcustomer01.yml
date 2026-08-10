@@ -1,0 +1,11 @@
+# EXAMPLE TENANT — replace with your own (see docs/getting-started.md §3).
+# Prod-ring customer tenant. Base-only composition (add groups/extras later).
+tenant: prodcustomer01
+display_name: Prod Customer 01 (prod)
+ring: prod
+credentials_ref: PRODCUSTOMER01
+
+groups: []
+extras: []
+pin_overrides: {}
+custom: []

@@ -1,0 +1,81 @@
+# ============================================================================
+# defaults.yml  —  fleet-wide composition defaults inherited by every tenant
+# ----------------------------------------------------------------------------
+# This file says WHAT every managed tenant gets ("base") and holds fleet-level
+# settings. It carries pack IDs only — NO versions. Versions live per ring in
+# fleet/pins/<ring>.yml so the same pack can sit at different versions in dev,
+# qa, and prod at once.
+# ============================================================================
+
+catalog:
+  # The upstream SOC Framework catalog this fleet CONSUMES (Plane 1). The fleet
+  # never forks the framework — it resolves pinned versions against this catalog
+  # and fetches the pinned release zips at deploy time.
+  url: https://raw.githubusercontent.com/Palo-Cortex/secops-framework/main/pack_catalog.json
+  # Pin the catalog to a commit for fully reproducible resolution. null = tip.
+  pinned_commit: null
+
+# ----------------------------------------------------------------------------
+# MSSP pack catalog   (release artifacts for MSSP-authored packs)
+# ----------------------------------------------------------------------------
+# The fleet's own packs (source under Packs/) release as per-pack tagged zips:
+# tag <id>-v<version>, asset <id>-v<version>.zip (the release-packs workflow).
+# mssp_pack_catalog.json at the repo root indexes them; scripts/mssp_catalog.py
+# generates it from Packs/ metadata and ring-gate verifies it never drifts.
+# catalog.py resolves MSSP ids from that committed file — no network — and
+# falls through to the upstream catalog above for everything else. If the packs
+# ever move to their own repo, this base flips to that repo's releases and the
+# catalog becomes a published URL; pins never change.
+mssp_catalog:
+  # Point this at YOUR fleet repo (the repo the release workflow publishes to).
+  release_base: https://github.com/YOUR-ORG/YOUR-FLEET-REPO/releases/download
+
+# ----------------------------------------------------------------------------
+# BASE  —  the foundation every tenant receives (pack IDs only).
+# The SOC Framework Pack Manager is deliberately NOT here: the fleet transport
+# is demisto-sdk, not the in-platform manager.
+# ----------------------------------------------------------------------------
+base:
+  - soc-optimization-unified     # Tier 1 — Core (scripts, lists, Universal Command)
+  - soc-framework-nist-ir        # Tier 2 — Lifecycle (NIST IR 800-61 phases)
+
+# ----------------------------------------------------------------------------
+# Config Overlay registry 
+# ----------------------------------------------------------------------------
+# The framework config Lists the fleet OWNS and tunes. A tenant's deployed value
+# for each is always `pinned ⊕ Config Overlay` — the pack's pristine List merged
+# with the fleet-owned sparse patch composed from fleet/config_overlays/
+# (defaults.yml ⊕ <tenant>.yml). These Lists are NOT customer extension points:
+# console hand-edits and customer-repo writes to them are ephemeral by design.
+# Only ids listed here may appear in a Config Overlay — scripts/config_overlay_lint.py
+# rejects anything else, so a typo'd List id fails the PR instead of silently
+# patching nothing.
+config_overlay_lists:
+  - SOCFrameworkActions_V3
+  - SOCExecutionList_V3
+  - SOCOptimizationConfig_V3
+  - SOCProductCategoryMap_V3
+
+# ----------------------------------------------------------------------------
+# Credentials backend
+# ----------------------------------------------------------------------------
+# Per-tenant creds (DEMISTO_BASE_URL / DEMISTO_API_KEY / XSIAM_AUTH_ID) are
+# NEVER stored in this repo. scripts/load_creds.py is the single seam that
+# resolves them for the converge step; this field selects its backend.
+#   github-environments — read from CI secrets. Preferred PACKED form is one
+#     secret per tenant:  <REF>_CREDS = {"base_url","api_key","auth_id"} (JSON),
+#     where REF is the tenant's credentials_ref. Legacy FLAT form
+#     (<REF>_BASE_URL / _API_KEY / _AUTH_ID) is still accepted as a fallback.
+# Future backends (vault, aws-sm, ...) plug into load_creds.py without touching
+# the workflow or deploy_tenant.py.
+credentials_backend: github-environments
+
+# ----------------------------------------------------------------------------
+# Customer namespace registry 
+# ----------------------------------------------------------------------------
+# Prefixes owned by customer overlay repos, the second independent writer to a
+# tenant. Fleet CI FORBIDS these prefixes on any MSSP-authored pack id; customer
+# CI REQUIRES them on every customer id. The partition is purely structural —
+# no ID inventory is ever exchanged between the two private repos.
+customer_namespaces:
+  - acme-

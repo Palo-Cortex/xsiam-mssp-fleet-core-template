@@ -1,0 +1,201 @@
+# ============================================================================
+# converge.yml — make a ring's tenants match that ring's pins
+# ----------------------------------------------------------------------------
+# Merging a change to fleet/pins/<ring>.yml on main IS the deploy authorisation
+# — there is no separate "deploy" button. This detects which
+# ring's pin file changed in the push and converges only that ring's tenants,
+# each via demisto-sdk with that tenant's own credentials.
+#
+# SAFETY: converge runs a DRY-RUN by default (prints the plan, touches
+# no tenant, needs no secrets). It only performs a live --apply when the repo
+# variable FLEET_LIVE == 'true' — flip that once real tenants and their
+# <credentials_ref>_* secrets exist. Until then every push stays green.
+#
+# A `plan` job computes the affected tenants (dispatch -> chosen ring; push ->
+# members of the changed rings) and emits them as a JSON array. The `converge`
+# job then fans out one job per tenant via a dynamic matrix, giving per-tenant
+# isolation and parallelism. When live you can split the prod ring into its own
+# job under the fleet-prod Environment for the approval gate + prod-scoped
+# secrets.
+#
+# Packs/** is a trigger too: for a pack pinned to the "local" sentinel the
+# source IS the deployable content, so a push touching Packs/<dir>/ converges
+# every ring whose pin file (or tenant whose pin_overrides) pins that pack
+# `local`. Version-pinned packs are unaffected by Packs/ edits.
+#
+# fleet/config_overlays/** is the third trigger: a tenant's deployed config
+# Lists are `pinned ⊕ Config Overlay`, so an overlay edit changes deployed
+# content with no pin change at all. defaults.yml is the
+# fleet-wide layer and converges every ring; <tenant>.yml converges that tenant.
+# ============================================================================
+name: converge
+
+on:
+  push:
+    branches: [main]
+    paths: ["fleet/pins/**", "Packs/**", "fleet/config_overlays/**"]
+  workflow_dispatch:
+    inputs:
+      ring:
+        description: "Ring to converge"
+        required: true
+        default: dev
+        type: choice
+        options: [dev, qa, prod, mssp]
+
+permissions:
+  contents: read
+
+jobs:
+  # -------------------------------------------------------------------------
+  # plan — compute the affected tenants and emit them as a JSON array for the
+  # converge job's matrix. Empty array => the converge job is skipped entirely.
+  # -------------------------------------------------------------------------
+  plan:
+    runs-on: ubuntu-latest
+    outputs:
+      tenants: ${{ steps.plan.outputs.tenants }}
+    steps:
+      - uses: actions/checkout@v4
+        with: { fetch-depth: 2 }        # need the previous commit to diff the push
+      - uses: actions/setup-python@v5
+        with: { python-version: "3.12" }
+      - run: pip install pyyaml
+
+      - name: Plan tenants
+        id: plan
+        env:
+          DISPATCH_RING: ${{ inputs.ring }}
+          EVENT: ${{ github.event_name }}
+        run: |
+          set -euo pipefail
+
+          # Which tenants? (dispatch -> chosen ring; push -> members of changed
+          # rings, plus rings/tenants pinning a changed Packs/ pack to "local")
+          TENANTS=$(python - <<'PY'
+          import json, os, subprocess, yaml
+          from pathlib import Path
+
+          def tenants_in(ring):
+              return [f.stem for f in sorted(Path("fleet/tenants").glob("*.yml"))
+                      if (yaml.safe_load(open(f)) or {}).get("ring") == ring]
+
+          def diff_names(*paths):
+              out = subprocess.run(
+                  ["git", "diff", "--name-only", "HEAD^", "HEAD", "--", *paths],
+                  capture_output=True, text=True).stdout
+              return [l for l in out.splitlines() if l.strip()]
+
+          extra_tenants = []
+          if os.environ["EVENT"] == "workflow_dispatch":
+              rings = [os.environ["DISPATCH_RING"]]
+          else:
+              rings = sorted({Path(l).stem for l in diff_names("fleet/pins")})
+
+              # Packs/<dir>/** changed -> that pack's source is the deployable
+              # content wherever it is pinned "local": add every ring whose pin
+              # file says local, and every tenant whose pin_overrides says local.
+              changed_dirs = sorted({l.split("/")[1] for l in diff_names("Packs")
+                                     if l.count("/") >= 1})
+              ids = set()
+              for d in changed_dirs:
+                  meta = Path("Packs") / d / "pack_metadata.json"
+                  try:
+                      ids.add(json.loads(meta.read_text()).get("id") or d)
+                  except Exception:      # dir deleted/renamed or metadata unreadable
+                      ids.add(d)
+              for f in sorted(Path("fleet/pins").glob("*.yml")):
+                  pins = (yaml.safe_load(open(f)) or {}).get("pins") or {}
+                  if f.stem not in rings and any(pins.get(i) == "local" for i in ids):
+                      rings.append(f.stem)
+              for f in sorted(Path("fleet/tenants").glob("*.yml")):
+                  ov = (yaml.safe_load(open(f)) or {}).get("pin_overrides") or {}
+                  if any(ov.get(i) == "local" for i in ids):
+                      extra_tenants.append(f.stem)
+
+              # fleet/config_overlays/<layer>.yml changed -> the deployed config
+              # Lists of the tenants that layer composes into are stale. The
+              # fleet-wide layer (defaults.yml) affects every ring; a per-tenant
+              # layer affects exactly that tenant.
+              layers = [Path(l).stem for l in diff_names("fleet/config_overlays")
+                        if l.endswith(".yml")]
+              if "defaults" in layers:
+                  for f in sorted(Path("fleet/pins").glob("*.yml")):
+                      if f.stem not in rings:
+                          rings.append(f.stem)
+              for t in layers:
+                  # a layer deleted with its tenant has no profile left to converge
+                  if t != "defaults" and Path(f"fleet/tenants/{t}.yml").exists():
+                      extra_tenants.append(t)
+
+          seen = []
+          for r in rings:
+              for t in tenants_in(r):
+                  if t not in seen:
+                      seen.append(t)
+          for t in extra_tenants:
+              if t not in seen:
+                  seen.append(t)
+          print(json.dumps(seen))
+          PY
+          )
+
+          echo "tenants=$TENANTS" >> "$GITHUB_OUTPUT"
+          if [ "$TENANTS" = "[]" ]; then
+            echo "No pin or local-source changes in this push — nothing to converge."
+          else
+            echo "Converging: $TENANTS"
+          fi
+
+  # -------------------------------------------------------------------------
+  # converge — one job per affected tenant (dynamic matrix from plan output).
+  # Dry-run by default; live --apply only when repo var FLEET_LIVE == 'true'.
+  # -------------------------------------------------------------------------
+  converge:
+    needs: plan
+    if: needs.plan.outputs.tenants != '[]'
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false          # one tenant failing must not cancel the others
+      matrix:
+        tenant: ${{ fromJson(needs.plan.outputs.tenants) }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with: { python-version: "3.12" }
+      - run: pip install pyyaml
+
+      - name: Config Overlays (registered List ids, patch shape)
+        # ring-gate runs this on every PR, but a direct push to main bypasses
+        # it. A bad List id would still surface at deploy time (an unconsumed
+        # id is an Incomplete Converge), but only AFTER uploads have started —
+        # this step fails the job before anything reaches a tenant.
+        run: python scripts/config_overlay_lint.py
+
+      - name: Converge ${{ matrix.tenant }}
+        env:
+          FLEET_LIVE: ${{ vars.FLEET_LIVE }}
+          # Orphan deletion stays off until this repo variable is 'true' —
+          # deploy_tenant.py only reports the bounded delete set otherwise.
+          FLEET_ALLOW_DELETE: ${{ vars.FLEET_ALLOW_DELETE }}
+          ALL_SECRETS: ${{ toJson(secrets) }}
+          TENANT: ${{ matrix.tenant }}
+          # lets deploy_tenant.py fetch MSSP release assets from this (private)
+          # repo via the assets API; public artifacts ignore it (contents: read)
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+
+          if [ "${FLEET_LIVE:-}" = "true" ]; then
+            pip install demisto-sdk >/dev/null   # only needed for a live upload
+            # load_creds.py resolves this tenant's trio from CI secrets via the
+            # backend in defaults.yml (packed <REF>_CREDS JSON, flat fallback),
+            # masks the sensitive values, and exports DEMISTO_BASE_URL/_API_KEY
+            # + XSIAM_AUTH_ID for deploy_tenant.py. Swapping stores is a change
+            # in that one script, not here.
+            eval "$(python scripts/load_creds.py "$TENANT")"
+            python scripts/deploy_tenant.py "$TENANT" --apply
+          else
+            echo "FLEET_LIVE is not 'true' → DRY-RUN (no tenant writes)."
+            python scripts/deploy_tenant.py "$TENANT"
+          fi

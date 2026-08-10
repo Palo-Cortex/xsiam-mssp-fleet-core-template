@@ -1,0 +1,14 @@
+# EXAMPLE TENANT — replace with your own (see docs/getting-started.md §3).
+# MSSP PARENT tenant — its own standalone ring `mssp`, OUTSIDE the customer
+# dev -> qa -> prod promotion chain (policies.yml rings.mssp.source is null, so
+# pins are authored freely here). The fleet talks to it directly like any other
+# tenant, not via XSIAM multitenant propagation. Base-only for now.
+tenant: msspparent
+display_name: MSSP Parent (MSSP)
+ring: mssp
+credentials_ref: MSSPPARENT
+
+groups: []
+extras: []
+pin_overrides: {}
+custom: []

@@ -1,0 +1,57 @@
+# ============================================================================
+# promote.yml — copy a pin forward into the next ring, as a reviewable PR
+# ----------------------------------------------------------------------------
+# Promotion is a pin-copy PR, not a console action: this edits
+# the target ring's pin file via scripts/promote.py and opens a PR. Merging that
+# PR is what authorises `converge` for the target ring — and the PR must pass
+# `ring-gate` (soak, no-skip, change window) before it can merge.
+# ============================================================================
+name: promote
+
+on:
+  workflow_dispatch:
+    inputs:
+      pack_id:
+        description: "Pack id to promote (e.g. VirusTotal)"
+        required: true
+      to_ring:
+        description: "Target ring"
+        required: true
+        default: qa
+        type: choice
+        options: [qa, prod]
+      version:
+        description: "Version (optional — defaults to the source ring's current pin)"
+        required: false
+
+permissions:
+  contents: write
+  pull-requests: write
+
+jobs:
+  promote:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with: { python-version: "3.12" }
+      - run: pip install pyyaml
+
+      - name: Copy the pin forward
+        run: |
+          python scripts/promote.py \
+            --pack "${{ inputs.pack_id }}" \
+            --to "${{ inputs.to_ring }}" \
+            ${{ inputs.version && format('--version {0}', inputs.version) || '' }}
+
+      - name: Open PR
+        uses: peter-evans/create-pull-request@v6
+        with:
+          branch: promote/${{ inputs.pack_id }}-to-${{ inputs.to_ring }}
+          title: "promote: ${{ inputs.pack_id }} → ${{ inputs.to_ring }}"
+          body: |
+            Copies `${{ inputs.pack_id }}` forward into `fleet/pins/${{ inputs.to_ring }}.yml`.
+
+            Merging authorises `converge` for the **${{ inputs.to_ring }}** ring.
+            `ring-gate` must pass first (no-skip, soak days, change window).
+          labels: promotion

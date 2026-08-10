@@ -1,0 +1,11 @@
+__pycache__/
+*.pyc
+.pytest_cache/
+.venv/
+installed_state.yml
+drift.json
+.env
+
+# demisto-sdk zip-packs droppings (release workflow builds these ephemerally)
+dist/
+Packs/*/metadata.json

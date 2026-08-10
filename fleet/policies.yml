@@ -11,6 +11,13 @@
 # change_windows (plus promotion_order). The require_dry_run and environment
 # keys document the intended GitHub setup but are not machine-enforced — wire
 # the Environment onto the converge job when going live (see the runbook).
+#
+# MSSP-authored packs (source under Packs/) are soak-exempt ONLY when promoting
+# out of the head ring (dev -> qa): tenant-first content is never installed in
+# dev, so dev soak is a dead timer — raising qa's min_soak_days soaks
+# third-party packs without delaying your own content. From qa -> prod, soak
+# applies to every pack alike (qa actually runs them); no-skip, the `local`
+# ban, and change windows always apply.
 # ============================================================================
 
 # Order content flows through the rings. A pin may only enter a ring from its
@@ -32,13 +39,13 @@ rings:
 
   qa:
     source: dev             # a qa pin must already exist in dev.yml at that version
-    min_soak_days: 0        # template default: 0 so the demo promotes instantly — raise (e.g. 2) for a real fleet
+    min_soak_days: 0        # raise (e.g. 2) to soak third-party packs in dev; MSSP-authored packs are always exempt
     require_dry_run: true
     environment: fleet-nonprod
 
   prod:
     source: qa              # a prod pin must already exist in qa.yml at that version
-    min_soak_days: 5        # counted from when qa.yml first carried that version
+    min_soak_days: 5        # counted from when qa.yml first carried that version (applies to ALL packs)
     require_dry_run: true
     require_change_window: true
     # Times are UTC. A prod pin change may only MERGE inside one of these windows.

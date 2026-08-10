@@ -10,6 +10,11 @@ from fleet/policies.yml as code:
                  ring (dev for qa, qa for prod) — you cannot skip a ring.
   soak           that version must have sat in the source ring's pin file for at
                  least `min_soak_days`, measured from git history (not memory).
+                 MSSP-authored packs (source under Packs/) are exempt ONLY when
+                 promoting out of a head ring (dev -> qa): tenant-first content
+                 is never installed in dev, so head-ring soak is a dead timer.
+                 Once the pack is running in qa, soak is meaningful and the
+                 qa -> prod gate applies to every pack alike.
   change window  a prod pin change may only MERGE inside a declared UTC window.
 
 Human layers sit ALONGSIDE this, not inside it: CODEOWNERS decides who reviews
@@ -32,6 +37,7 @@ Usage:
     python scripts/ring_gate.py --base origin/main --now 2026-07-21T15:00:00Z
 """
 import argparse
+import json
 import subprocess
 import sys
 from datetime import datetime, timezone
@@ -97,6 +103,22 @@ def changed_rings(merge_base):
     return rings
 
 
+def mssp_authored_ids(ref):
+    """Pack ids whose SOURCE lives in this repo (Packs/<id>/pack_metadata.json),
+    read at `ref` — the base branch, not the PR head, for the same reason as
+    policies_at: a PR must not be able to soak-exempt a pack by adding Packs/
+    metadata for it in the same diff."""
+    ids = set()
+    for line in sh("ls-tree", "-r", "--name-only", ref, "--", "Packs").splitlines():
+        parts = line.strip().split("/")
+        if len(parts) == 3 and parts[2] == "pack_metadata.json":
+            try:
+                ids.add(json.loads(sh("show", f"{ref}:{line.strip()}")).get("id") or parts[1])
+            except Exception:  # noqa: BLE001 — unreadable metadata: dir name is the id
+                ids.add(parts[1])
+    return ids
+
+
 def soak_days(source_ring, pack, version, now):
     """Days since the source ring's pin file first carried pack@version.
 
@@ -145,6 +167,12 @@ def evaluate(ring, pol, merge_base, now):
     removed = [p for p in old if p not in new]
 
     src = pins_now(source)
+    # MSSP-authored packs skip soak only when promoting OUT OF a head ring
+    # (dev -> qa): tenant-first content is never installed there, so head-ring
+    # soak is a dead timer. From qa onward the pack is actually running, so
+    # soak applies to every pack alike.
+    source_is_head = (pol["rings"].get(source) or {}).get("source") is None
+    soak_exempt = mssp_authored_ids(merge_base) if source_is_head else set()
     for pack, version in sorted(changed.items()):
         # "local" never enters a gated ring: soak on the sentinel string is
         # meaningless (the Packs/ source keeps changing under it) and the deploy
@@ -161,6 +189,9 @@ def evaluate(ring, pol, merge_base, now):
                 f"(has {src.get(pack, 'nothing')}); promote through {source} first")
             continue
         # soak: measured from source ring history
+        if pack in soak_exempt:
+            notes.append(f"{ring}: {pack} {version} MSSP-authored — soak exempt ✓")
+            continue
         days = soak_days(source, pack, version, now)
         need = ringpol.get("min_soak_days", 0)
         if days is None:

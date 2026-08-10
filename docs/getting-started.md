@@ -133,6 +133,11 @@ lab tenant (see the README's "What still needs proving" section).
 fast testing. For production use, raise `min_soak_days` (e.g. qa: 2, prod: 5)
 and set your real prod change windows before onboarding customer tenants.
 
+Dev → qa soak gates **third-party packs only**: MSSP-authored packs (source
+under `Packs/`) are soak-exempt out of the head ring, so raising qa's
+`min_soak_days` never slows your own content. Qa → prod soak applies to every
+pack (see the runbook's tenant-authored content section).
+
 ## Where things live
 
 | You want to… | Edit |

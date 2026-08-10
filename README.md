@@ -12,12 +12,14 @@ offline out of the box (CI stays green with zero setup), and every example name
 is a placeholder you replace with your own. Start with
 [`docs/getting-started.md`](docs/getting-started.md) to adopt it; this README is
 the operator's map, [`docs/runbook.md`](docs/runbook.md) covers day-to-day
-tasks, and two lifecycle walkthroughs cover content end to end:
+tasks, and three lifecycle walkthroughs cover content end to end:
 [`docs/custom-pack-lifecycle.md`](docs/custom-pack-lifecycle.md) for
-MSSP-authored packs (author → package → qa → prod) and
+MSSP-authored packs (author → package → qa → prod),
 [`docs/customer-pack-lifecycle.md`](docs/customer-pack-lifecycle.md) for
 customer-owned packs (the second writer — referenced, protected, never
-deployed by the fleet).
+deployed by the fleet), and
+[`docs/config-overlay-lifecycle.md`](docs/config-overlay-lifecycle.md) for
+Config Overlays (tuning framework Lists per tenant, `pinned ⊕ overlay`).
 
 > One MSSP = one fleet repo like this. It **consumes** the upstream framework
 > catalog by URL and fetches pinned release zips at deploy time — it never forks

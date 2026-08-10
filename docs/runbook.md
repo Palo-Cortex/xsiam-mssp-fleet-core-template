@@ -72,7 +72,9 @@ is not reported as drift.
 
 ## Flip an action live for a tenant
 Framework config Lists are fleet-owned and tuned only through a **Config Overlay**
- — never a console edit, which convergence overwrites.
+ — never a console edit, which convergence overwrites. Full end-to-end (merge
+semantics, converge fan-out, drift):
+[config-overlay-lifecycle.md](config-overlay-lifecycle.md).
 
 1. Edit `fleet/config_overlays/<tenant>.yml` (create it if absent) and set the
    action's key under its List, e.g. `shadow_mode: false` for `isolate_host`

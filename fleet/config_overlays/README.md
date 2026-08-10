@@ -10,4 +10,5 @@ mapping of List id → sparse patch, and only ids registered in
 `fleet/defaults.yml` → `config_overlay_lists` are allowed
 (`scripts/config_overlay_lint.py` enforces both).
 
-See `docs/runbook.md` ("Flip an action live for a tenant") for the workflow.
+See `docs/runbook.md` ("Flip an action live for a tenant") for the checklist
+and `docs/config-overlay-lifecycle.md` for the full end-to-end walkthrough.

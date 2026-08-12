@@ -17,7 +17,7 @@ on:
     paths: ["fleet/**", "scripts/**", "tests/**", "Packs/**", "pytest.ini", "mssp_pack_catalog.json"]
 
 permissions:
-  contents: read
+  contents: read #UPDATE
 
 jobs:
   gate:

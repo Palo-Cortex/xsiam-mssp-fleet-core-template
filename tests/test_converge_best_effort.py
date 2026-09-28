@@ -251,6 +251,10 @@ def test_all_success_still_deletes_orphans_and_reports_converged(
     )
 
     out = capsys.readouterr().out
+    assert f"− delete {LOCAL_PACK_ID}" in out, (
+        f"a successful Orphan delete must not use the ✗ failure marker:\n{out}"
+    )
+    assert "✗" not in out
     assert f"# converged {tenant}: 2 upserted, 1 deleted" in out
     assert "INCOMPLETE" not in out
     assert "REMOVE held" not in out

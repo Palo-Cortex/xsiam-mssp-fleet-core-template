@@ -488,8 +488,10 @@ def converge(tenant, apply, offline, installed_fixture):
             for pid in to_delete:
                 print(f"  ⚠ hold delete {pid} — upsert failures, REMOVE held")
         elif os.environ.get("FLEET_ALLOW_DELETE") == "true":
+            # Printed before the call; delete_packs raises on any non-200, so a
+            # failed delete still fails the job. ✗ is reserved for failures.
             for pid in to_delete:
-                print(f"  ✗ delete {pid}")
+                print(f"  − delete {pid}")
             delete_packs(creds, to_delete)          # one batch POST for all orphans
             deleted = len(to_delete)
         else:

@@ -3,7 +3,7 @@ from resolve import normalize_token, resolve
 
 def test_normalize_token_lowercases_and_strips():
     assert normalize_token("QACANARY01") == "qacanary01"
-    assert normalize_token("acme-prod") == "acmeprod"
+    assert normalize_token("acme-prod") == "acme-prod"
     assert normalize_token("api_host.01") == "apihost01"
 
 

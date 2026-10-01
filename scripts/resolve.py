@@ -185,10 +185,10 @@ def _dedupe(ids):
 
 
 def normalize_token(s):
-    """Lowercase s and keep only ascii alphanumerics (drop -, ., _, spaces, etc.)."""
+    """Lowercase s and keep only ascii alphanumerics (drop ., _, spaces, etc.)."""
     if not s:
         return ""
-    return "".join(c for c in str(s).lower() if c.isalnum())
+    return "".join(c for c in str(s).lower() if c.isalnum() or c == '-')
 
 
 def resolve(tenant_name):

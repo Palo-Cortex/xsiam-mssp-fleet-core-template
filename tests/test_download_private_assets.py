@@ -95,3 +95,20 @@ def test_missing_asset_raises_deployerror(monkeypatch):
     with pytest.raises(deploy_tenant.DeployError) as exc:
         deploy_tenant.download(RELEASE_URL)
     assert "ExamplePack-v1.0.0" in str(exc.value)
+
+
+def test_missing_release_raises_deployerror_naming_the_release_job(monkeypatch):
+    """A 404 on the release lookup is turned into a DeployError that says
+    where MSSP releases come from, instead of a bare HTTPError."""
+    import urllib.error
+    monkeypatch.setenv("GH_TOKEN", "tok123")
+
+    def fake_urlopen(req, timeout=None):
+        raise urllib.error.HTTPError(req.full_url, 404, "Not Found", {}, None)
+
+    monkeypatch.setattr(deploy_tenant.urllib.request, "urlopen", fake_urlopen)
+
+    with pytest.raises(deploy_tenant.DeployError) as exc:
+        deploy_tenant.download(RELEASE_URL)
+    assert "ExamplePack-v1.0.0 not found" in str(exc.value)
+    assert "release job" in str(exc.value)

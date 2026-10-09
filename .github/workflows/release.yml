@@ -1,30 +1,40 @@
 # ============================================================================
 # release.yml — build + publish MSSP-authored pack release artifacts
 # ----------------------------------------------------------------------------
-# For every pack under Packs/, if the tag <id>-v<currentVersion> does not exist
-# yet, build its zip with demisto-sdk and publish a GitHub Release with the zip
-# as the asset. Tags are per-pack BY NAME (the tag itself marks a repo commit —
-# that's provenance; the release ASSET is the immutable deployable). A tag that
-# already exists is skipped: versions are immutable, re-releasing is forbidden.
+# For every pack under Packs/, if release <id>-v<currentVersion> does not yet
+# carry its zip asset, build the zip with demisto-sdk and publish it. Tags are
+# per-pack BY NAME (the tag marks a repo commit — that's provenance; the release
+# ASSET is the immutable deployable). A version whose asset already exists is
+# skipped: versions are immutable, re-releasing is forbidden. A release that
+# exists WITHOUT its asset (an upload that failed part-way) is repaired by
+# uploading the zip to it — for a pack's CURRENT version only, since that's the
+# only version Packs/ can still build. Each new tag is created on the commit the
+# zip was built from (--target), not on whatever main points at by then.
+#
+# Releases publish only from the default branch. A run on any other branch (a
+# manual converge on a feature branch) that finds something to publish fails
+# instead of creating permanent releases from unreviewed code.
+#
+# This is a REUSABLE workflow. It has no push trigger of its own: converge.yml
+# calls it as its first job, so on every push the release finishes before any
+# tenant is planned or converged. That ordering is what stops converge fetching
+# a zip that hasn't been published yet — whether the pack bump and the pin land
+# in one push, or in two pushes merged back to back (converge's concurrency
+# queue runs those in order). Converge triggers on Packs/**, so every pack bump
+# still releases. workflow_dispatch remains for manual backfill.
 #
 # The committed mssp_pack_catalog.json already points at these URLs (the scheme
 # is deterministic — see scripts/mssp_catalog.py), so this workflow publishes
-# artifacts only; it never writes back to the repo. Merge order for deploys:
-# pack bump merges first (this publishes the zip), the pin flip merges second.
-#
-# Triggers: any push to main touching Packs/**, plus workflow_dispatch to
-# backfill packs whose current version predates this workflow.
+# artifacts only; it never writes back to the repo.
 # ============================================================================
 name: release-packs
 
 on:
-  push:
-    branches: [main]
-    paths: ["Packs/**"]
+  workflow_call: {}
   workflow_dispatch: {}
 
 permissions:
-  contents: write          # create tags + releases via GITHUB_TOKEN
+  contents: write          # create tags + releases via GITHUB_TOKEN (a caller must grant it)
 
 jobs:
   release:
@@ -33,19 +43,22 @@ jobs:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
         with: { python-version: "3.12" }
-      # pebble 5.2.x crashes at process-pool teardown on Python >= 3.12
-      # (AttributeError: ChannelMutex has no writer_mutex), failing zip-packs
-      # after the zip is already built. Pin below 5.2 until fixed upstream.
-      - run: pip install demisto-sdk "pebble<5.2" >/dev/null
 
-      - name: Release unpublished pack versions
+      # Cheap check first: which pack versions are missing their release asset?
+      # Most converge runs release nothing, so demisto-sdk is only installed
+      # when there is something to build.
+      - name: Find unpublished pack versions
+        id: missing
         env:
           GH_TOKEN: ${{ github.token }}
-          DEMISTO_SDK_IGNORE_CONTENT_WARNING: "1"
+          # gh reads GH_TOKEN for github.com / *.ghe.com and GH_ENTERPRISE_TOKEN
+          # for GitHub Enterprise Server; set both so the job works on either.
+          GH_ENTERPRISE_TOKEN: ${{ github.token }}
+          DEFAULT_BRANCH: ${{ github.event.repository.default_branch }}
         run: |
           set -euo pipefail
 
-          python - <<'PY' > /tmp/packs.txt
+          python - <<'PY' > "$RUNNER_TEMP/packs.txt"
           import json
           from pathlib import Path
           for meta in sorted(Path("Packs").glob("*/pack_metadata.json")):
@@ -57,13 +70,61 @@ jobs:
               print(pid, ver, meta.parent.name)
           PY
 
-          released=0
+          : > "$RUNNER_TEMP/missing.txt"
           while read -r ID VER DIR; do
             TAG="${ID}-v${VER}"
-            if gh release view "$TAG" >/dev/null 2>&1; then
+            # `gh release view` fails when the release doesn't exist; an empty
+            # asset list means it exists but the zip never got uploaded.
+            ASSETS=$(gh release view "$TAG" --json assets -q '.assets[].name' 2>/dev/null || true)
+            if grep -qxF "${TAG}.zip" <<<"$ASSETS"; then
               echo "· $TAG already released — skipping (versions are immutable)"
               continue
             fi
+            echo "$ID $VER $DIR" >> "$RUNNER_TEMP/missing.txt"
+            echo "→ $TAG needs releasing"
+          done < "$RUNNER_TEMP/packs.txt"
+
+          if [ -s "$RUNNER_TEMP/missing.txt" ] && [ "$GITHUB_REF" != "refs/heads/$DEFAULT_BRANCH" ]; then
+            # Versions are immutable: a release built from this branch could
+            # never be replaced by the reviewed code once it merges.
+            echo "::error::releases publish only from $DEFAULT_BRANCH, not $GITHUB_REF — merge the pack change first"
+            exit 1
+          fi
+          if [ -s "$RUNNER_TEMP/missing.txt" ]; then
+            echo "any=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "any=false" >> "$GITHUB_OUTPUT"
+            echo "every pack version is already released"
+          fi
+
+      # pebble 5.2.x crashes at process-pool teardown on Python >= 3.12
+      # (AttributeError: ChannelMutex has no writer_mutex), failing zip-packs
+      # after the zip is already built. Pin below 5.2 until fixed upstream.
+      - name: Install demisto-sdk
+        if: steps.missing.outputs.any == 'true'
+        run: pip install demisto-sdk "pebble<5.2" >/dev/null
+
+      - name: Release unpublished pack versions
+        if: steps.missing.outputs.any == 'true'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_ENTERPRISE_TOKEN: ${{ github.token }}
+          DEMISTO_SDK_IGNORE_CONTENT_WARNING: "1"
+        run: |
+          set -euo pipefail
+
+          has_asset() {
+            # Capture first, then match: piping gh into `grep -q` can SIGPIPE
+            # gh, which pipefail would turn into a false "no asset".
+            local assets
+            assets=$(gh release view "$1" --json assets -q '.assets[].name' 2>/dev/null || true)
+            grep -qxF "$1.zip" <<<"$assets"
+          }
+
+          released=0
+          repaired=0
+          while read -r ID VER DIR; do
+            TAG="${ID}-v${VER}"
             echo "::group::release $TAG"
             rm -rf dist && mkdir dist
             demisto-sdk zip-packs -i "Packs/$DIR" -o dist
@@ -84,10 +145,27 @@ jobs:
                                f"— check the pack's directory layout (Scripts/ etc.)")
           print(f"zip ok: {len(content)} content file(s)")
           PY
-            gh release create "$TAG" "dist/${TAG}.zip" \
-              --title "$TAG" \
-              --notes "MSSP-authored pack \`$ID\` version \`$VER\`, built from \`Packs/$DIR\` at \`${GITHUB_SHA}\`. Deployed by pinning \`$ID: $VER\` in a ring's pin file."
+
+            if gh release view "$TAG" >/dev/null 2>&1; then
+              # The release exists but lost its asset (a failed upload): repair it.
+              echo "release $TAG exists without its zip — uploading"
+              gh release upload "$TAG" "dist/${TAG}.zip" --clobber
+              repaired=$((repaired+1))
+            elif gh release create "$TAG" "dist/${TAG}.zip" \
+                --target "$GITHUB_SHA" \
+                --title "$TAG" \
+                --notes "MSSP-authored pack \`$ID\` version \`$VER\`, built from \`Packs/$DIR\` at \`${GITHUB_SHA}\`. Deployed by pinning \`$ID: $VER\` in a ring's pin file."; then
+              released=$((released+1))
+            elif has_asset "$TAG"; then
+              # A manual backfill run can race a converge-called run for the
+              # same tag. If the other run published it, that's success.
+              echo "$TAG was published concurrently by another run — ok"
+            else
+              echo "::error::failed to publish $TAG"
+              exit 1
+            fi
+
+            has_asset "$TAG" || { echo "::error::$TAG has no ${TAG}.zip after publishing"; exit 1; }
             echo "::endgroup::"
-            released=$((released+1))
-          done < /tmp/packs.txt
-          echo "released $released new pack version(s)"
+          done < "$RUNNER_TEMP/missing.txt"
+          echo "released $released new pack version(s), repaired $repaired"

@@ -27,6 +27,26 @@
 # Lists are `pinned ⊕ Config Overlay`, so an overlay edit changes deployed
 # content with no pin change at all. defaults.yml is the
 # fleet-wide layer and converges every ring; <tenant>.yml converges that tenant.
+#
+# RELEASE BEFORE CONVERGE: the first job calls release.yml, which publishes any
+# MSSP pack version under Packs/ that has no release zip yet. `plan` needs it,
+# so no tenant is planned until this push's zips exist — a pack bump and its pin
+# can land in one push. The release job runs on every run (it finishes in
+# seconds when nothing is new) and has no `if:`, so plan/converge never inherit
+# a skip. If it fails, nothing converges — including pushes that only touch
+# upstream pins — until the broken pack under Packs/ is fixed. That's the
+# price of the ordering guarantee: a pack that can't be built blocks the fleet
+# rather than deploying around it.
+#
+# ONE RUN AT A TIME: the concurrency group queues runs for main in order. With
+# `queue: max`, up to 100 runs wait their turn instead of the newest replacing
+# the one already waiting (GitHub's default). A pin merged right after its pack
+# bump therefore converges only after the bump's run (and its release) has
+# finished, and every push still gets its own converge (plan diffs per push, so
+# a cancelled run would mean tenants that never converge). `queue:` needs
+# GitHub.com (May 2026+); where it isn't supported the workflow fails
+# validation, so drop the line there and accept that a burst of merges can
+# cancel a waiting run (re-run converge for that ring by hand).
 # ============================================================================
 name: converge
 
@@ -46,12 +66,28 @@ on:
 permissions:
   contents: read
 
+concurrency:
+  group: converge-${{ github.ref }}
+  cancel-in-progress: false
+  queue: max                # up to 100 waiting runs, in order, instead of 1 (GitHub.com only)
+
 jobs:
+  # -------------------------------------------------------------------------
+  # release — publish any unreleased MSSP pack versions before planning.
+  # A called workflow only gets the permissions its caller grants, so
+  # contents: write must be set HERE (without it, `gh release create` 403s).
+  # -------------------------------------------------------------------------
+  release:
+    uses: ./.github/workflows/release.yml
+    permissions:
+      contents: write
+
   # -------------------------------------------------------------------------
   # plan — compute the affected tenants and emit them as a JSON array for the
   # converge job's matrix. Empty array => the converge job is skipped entirely.
   # -------------------------------------------------------------------------
   plan:
+    needs: release
     runs-on: ubuntu-latest
     outputs:
       tenants: ${{ steps.plan.outputs.tenants }}

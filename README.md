@@ -105,9 +105,9 @@ scripts/
 └── load_creds.py         # resolve ONE tenant's creds in CI (the only credential-store seam)
 tests/ · pytest.ini       # ▶ the pytest suite; ring-gate runs it on every PR
 .github/workflows/        # GitHub Actions
-├── converge.yml          # push to main (fleet/pins/**, Packs/**, or fleet/config_overlays/**) → plan job + per-tenant matrix converge
-├── ring-gate.yml         # required PR check: pytest + resolve + namespace_lint + ring_gate + catalog sync
-├── release.yml           # push to main (Packs/**) → tag <id>-v<ver> + GitHub Release with the pack zip
+├── converge.yml          # push to main (fleet/pins/**, Packs/**, or fleet/config_overlays/**) → release job → plan job → per-tenant matrix converge
+├── ring-gate.yml         # required PR check: pytest + resolve + namespace_lint + ring_gate + catalog sync + release check
+├── release.yml           # reusable (called first by converge; or manual) → tag <id>-v<ver> + GitHub Release with the pack zip
 ├── promote.yml           # workflow_dispatch → pin-copy PR
 └── drift.yml             # workflow_dispatch drift report; opens a labeled issue
 fixtures/ · docs/
@@ -184,7 +184,7 @@ flowchart LR
     G2 -->|merge| C3["converge<br/>prod ring"]
 ```
 
-1. **Author / bump** a version in `fleet/pins/dev.yml`; merging converges the dev ring. For an **MSSP-authored pack**: bump its `currentVersion` and regenerate the catalog (`mssp_catalog.py --write`) in the pack PR — merging publishes the tagged release zip (`release.yml`) — then flip the pin to the new version. (Fast path while iterating: pin it `local` and every merge to its `Packs/<id>/` source converges dev directly.)
+1. **Author / bump** a version in `fleet/pins/dev.yml`; merging converges the dev ring. For an **MSSP-authored pack**: bump its `currentVersion` and regenerate the catalog (`mssp_catalog.py --write`) in the pack PR; the pin to the new version can go in the same PR — converge publishes the tagged release zip (`release.yml`) before it plans any tenant. (Fast path while iterating: pin it `local` and every merge to its `Packs/<id>/` source converges dev directly.)
 2. **Promote** with `promote.py` (or the `promote` workflow) → a PR copying the pin into `qa.yml`.
 3. The PR must pass **`ring-gate`**: the version must already be in the source ring (no-skip), have soaked ≥ the policy's `min_soak_days` (measured from git history; dev → qa soak exempts MSSP-authored packs — dev never runs them — while qa → prod soak applies to every pack), and — for prod — merge inside a change window. A `local` pin may **never** enter a gated ring: soak on the sentinel is meaningless while the `Packs/` source keeps changing, so MSSP packs promote as their released versions, exactly like upstream packs.
 4. **Merge** → `converge` deploys the target ring. Prod runs under the `fleet-prod` Environment (approval + prod-scoped secrets).
@@ -219,8 +219,18 @@ repo's Releases; when the repo is private their `browser_download_url`s 404, so
 `deploy_tenant.py` fetches them through the assets API with the workflow token
 (`contents: read` — no extra secret; public/upstream artifacts are unaffected).
 
-**Converge fans out per tenant.** A push to main touching `fleet/pins/**`,
-`Packs/**`, or `fleet/config_overlays/**` runs a `plan` job that computes the
+**GitHub Enterprise.** The fleet runs on github.com, Enterprise Cloud with data
+residency (`<company>.ghe.com`), or GitHub Enterprise Server. Release downloads
+and ring-gate's release check use the GitHub the workflow runs on
+(`GITHUB_SERVER_URL` / `GITHUB_API_URL`), so set `mssp_catalog.release_base` to
+a URL on that same host. Upstream SOC Framework zips still come from github.com
+as public downloads, so Enterprise Server runners need outbound access to it.
+Also remove `queue: max` from `converge.yml` if your server doesn't support it.
+
+**Converge releases first, then fans out per tenant.** A push to main touching
+`fleet/pins/**`, `Packs/**`, or `fleet/config_overlays/**` first runs the
+release job (`release.yml`, publishing any MSSP pack version not yet released),
+then a `plan` job that computes the
 affected tenants (changed rings, plus any ring or tenant pinning a changed
 `Packs/` pack to `local`, plus the tenants a changed Config Overlay layer
 composes into) and emits them as a matrix — one isolated job per tenant,
@@ -228,11 +238,21 @@ composes into) and emits them as a matrix — one isolated job per tenant,
 
 ```mermaid
 flowchart LR
-    push["push to main<br/>fleet/pins/** · Packs/** · fleet/config_overlays/**"] --> plan["plan job:<br/>affected tenants → JSON"]
+    push["push to main<br/>fleet/pins/** · Packs/** · fleet/config_overlays/**"] --> rel["release job:<br/>publish unreleased MSSP packs"] --> plan["plan job:<br/>affected tenants → JSON"]
     plan --> t1["converge tenant A"]
     plan --> t2["converge tenant B"]
     plan --> t3["… one job per tenant<br/>(fail-fast: false)"]
 ```
+
+Converge runs for `main` are **queued, one at a time, in order** (a
+concurrency group with `queue: max`, which holds up to 100 waiting runs instead
+of GitHub's default of one), so a pin merged right after its pack bump converges
+only once the bump's release exists. `queue:` needs GitHub.com; on GitHub
+Enterprise Server remove that line from `converge.yml`.
+
+Because every converge releases first, **a pack under `Packs/` that fails to
+build stops all converges** — even pushes that only change upstream pins —
+until it is fixed. ring-gate doesn't build zips, so this shows up after merge.
 
 **CI is green with zero setup:** `converge` runs a **dry-run** on every
 push (no secrets, no tenant writes) until you set the repo variable
@@ -247,15 +267,22 @@ converge job's prod ring.
 ## MSSP pack releases
 
 MSSP packs release as per-pack tagged GitHub Release zips (`release.yml`: tag
-`<id>-v<ver>`, asset `<id>-v<ver>.zip`; tags are immutable — an existing tag is
-never re-released, and a metadata-only zip is refused). The committed
+`<id>-v<ver>`, asset `<id>-v<ver>.zip`; versions are immutable — a released
+version is never rebuilt, and a metadata-only zip is refused). The tag is
+created on the commit the zip was built from. If a pack's *current* version has
+a release without its zip (a failed upload), the next run repairs it; older
+versions can't be rebuilt from `Packs/`. Converge calls it as its first job, so
+releases always exist before any tenant is planned. Releases publish only from
+the default branch: a manual converge on another branch that would publish
+fails instead. The committed
 `mssp_pack_catalog.json` indexes them with direct `zip_url`s; `catalog.py`
 resolves MSSP ids from that local file (no network) and falls through to the
 upstream catalog otherwise. A version-pinned MSSP pack fetches + uploads exactly
 like an upstream pack, so it promotes through qa/prod normally; `local` remains
 the dev-only fast path (ring-gate keeps it out of gated rings). Flow: bump
-`currentVersion` + regenerate the catalog (`mssp_catalog.py --write`) in the
-pack PR → merge publishes the release → flip the pin in a follow-up PR.
+`currentVersion` + regenerate the catalog (`mssp_catalog.py --write`) and pin
+the new version — one PR or two. ring-gate's release check rejects a pin to a
+version that was never released and isn't the current one.
 
 ## What still needs proving against your tenants
 

@@ -17,10 +17,11 @@ ring-gate runs `--check` so the catalog can never drift from Packs/ metadata.
 
 zip_url is derived from `mssp_catalog.release_base` in fleet/defaults.yml plus
 the tag convention. It is deterministic, so the entry is written BEFORE the
-release workflow has published the artifact. Merge order still matters for
-deploys: merge the pack bump first (the release workflow publishes the zip),
-flip the pin second — a pin referencing an unpublished version fails the
-converge fetch loudly, it never deploys something else.
+release workflow has published the artifact. Merge order doesn't matter:
+converge runs the release workflow as its first job, so a pack bump and its pin
+can land in one PR. ring-gate (release_check.py) rejects a pin to a version
+that was never released and isn't the current one, so a bad pin fails the PR,
+not the converge.
 
 Usage:
     python scripts/mssp_catalog.py --write   # regenerate from Packs/ metadata

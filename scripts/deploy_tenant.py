@@ -46,6 +46,7 @@ import re
 import subprocess
 import sys
 import tempfile
+import urllib.error
 import urllib.parse
 import urllib.request
 import zipfile
@@ -198,14 +199,24 @@ def download(url):
     m = _GH_RELEASE.match(url)
     token = _github_token()
     if m and token:
-        rel = _gh_api_json(
-            f"https://api.github.com/repos/{m['owner']}/{m['repo']}"
-            f"/releases/tags/{m['tag']}", token)
+        try:
+            rel = _gh_api_json(
+                f"https://api.github.com/repos/{m['owner']}/{m['repo']}"
+                f"/releases/tags/{m['tag']}", token)
+        except urllib.error.HTTPError as e:
+            if e.code == 404:
+                raise DeployError(
+                    f"release {m['tag']} not found in {m['owner']}/{m['repo']} — "
+                    f"MSSP packs are released from Packs/ metadata by the release "
+                    f"job at the start of converge; check that job's log, and that "
+                    f"the pinned version was ever a pack's currentVersion") from e
+            raise
         assets = {a["name"]: a["id"] for a in rel.get("assets", [])}
         if m["asset"] not in assets:
             raise DeployError(
                 f"release {m['tag']} has no asset named {m['asset']} "
-                f"(has: {', '.join(sorted(assets)) or 'none'})")
+                f"(has: {', '.join(sorted(assets)) or 'none'}) — re-run the "
+                f"release-packs workflow to repair it")
         req = urllib.request.Request(
             f"https://api.github.com/repos/{m['owner']}/{m['repo']}"
             f"/releases/assets/{assets[m['asset']]}",

@@ -3,8 +3,9 @@
 # ----------------------------------------------------------------------------
 # One path-aware check enforces per-ring promotion policy (no-skip, soak days,
 # change windows) from fleet/policies.yml, plus the fleet half of the namespace
-# contract, a resolve validation that fails on any unpinned pack, and the pytest
-# suite under tests/. Mark this job as a required status check in branch
+# contract, a resolve validation that fails on any unpinned pack, a check that
+# every pinned MSSP pack version has (or is about to get) a release, and the
+# pytest suite under tests/. Mark this job as a required status check in branch
 # protection.
 #
 # fetch-depth: 0 is required — ring_gate.py measures soak from the git history
@@ -45,6 +46,11 @@ jobs:
 
       - name: MSSP catalog in sync with Packs/ metadata
         run: python scripts/mssp_catalog.py --check
+
+      - name: Pinned MSSP pack versions are released (or released by this merge)
+        env:
+          GH_TOKEN: ${{ github.token }}   # read releases; contents: read is enough
+        run: python scripts/release_check.py
 
       - name: Config Overlays (registered List ids, patch shape)
         run: python scripts/config_overlay_lint.py

@@ -42,7 +42,6 @@ Usage:
 import argparse
 import json
 import os
-import re
 import subprocess
 import sys
 import tempfile
@@ -55,6 +54,7 @@ from pathlib import Path
 from resolve import (resolve, owned_pins, ResolveError, load, local_packs,
                      deep_merge)
 from catalog import resolve_artifact, load_catalog, CatalogError
+from github_host import api_url, parse_release_asset
 
 REPO = Path(__file__).resolve().parents[1]
 CRED_ENV = ("DEMISTO_BASE_URL", "DEMISTO_API_KEY", "XSIAM_AUTH_ID")
@@ -163,12 +163,6 @@ def delete_packs(creds, pack_ids):
                 body={"ids": list(pack_ids)}, expect_status=200)
 
 
-_GH_RELEASE = re.compile(
-    r"https://github\.com/(?P<owner>[^/]+)/(?P<repo>[^/]+)"
-    r"/releases/download/(?P<tag>[^/]+)/(?P<asset>[^/]+)$"
-)
-
-
 def _github_token():
     return os.environ.get("GH_TOKEN") or os.environ.get("GITHUB_TOKEN")
 
@@ -187,21 +181,24 @@ def download(url):
 
     A plain GET covers public artifacts (the upstream catalog's zips). A
     browser_download_url on a PRIVATE repo 404s even with a token, so when the
-    URL is a GitHub release asset and a GH_TOKEN/GITHUB_TOKEN is present (CI
-    always has one), resolve tag -> asset id via the API and download through
-    the assets endpoint with Accept: octet-stream. This keeps catalog zip_urls
+    URL is a release asset on THIS GitHub (github.com, <company>.ghe.com, or
+    GitHub Enterprise Server — see github_host.py) and a GH_TOKEN/GITHUB_TOKEN
+    is present (CI always has one), resolve tag -> asset id via this GitHub's
+    API and download through the assets endpoint with Accept: octet-stream.
+    Release URLs on any other host are fetched with a plain GET, without the
+    token. This keeps catalog zip_urls
     canonical/deterministic (see scripts/mssp_catalog.py) — the auth dance
     lives only here.
     """
     fd, path = tempfile.mkstemp(suffix=".zip")
     os.close(fd)
 
-    m = _GH_RELEASE.match(url)
+    m = parse_release_asset(url)
     token = _github_token()
     if m and token:
         try:
             rel = _gh_api_json(
-                f"https://api.github.com/repos/{m['owner']}/{m['repo']}"
+                f"{api_url()}/repos/{m['owner']}/{m['repo']}"
                 f"/releases/tags/{m['tag']}", token)
         except urllib.error.HTTPError as e:
             if e.code == 404:
@@ -218,7 +215,7 @@ def download(url):
                 f"(has: {', '.join(sorted(assets)) or 'none'}) — re-run the "
                 f"release-packs workflow to repair it")
         req = urllib.request.Request(
-            f"https://api.github.com/repos/{m['owner']}/{m['repo']}"
+            f"{api_url()}/repos/{m['owner']}/{m['repo']}"
             f"/releases/assets/{assets[m['asset']]}",
             headers={"Authorization": f"token {token}",
                      "Accept": "application/octet-stream"})

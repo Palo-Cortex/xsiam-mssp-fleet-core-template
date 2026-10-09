@@ -26,6 +26,14 @@ _DEFAULTS = {
 }
 
 
+@pytest.fixture(autouse=True)
+def _github_com_by_default(monkeypatch):
+    """Tests assume github.com unless they set these themselves, so the suite
+    gives the same results on a GitHub Enterprise Server runner."""
+    monkeypatch.delenv("GITHUB_SERVER_URL", raising=False)
+    monkeypatch.delenv("GITHUB_API_URL", raising=False)
+
+
 def _write_yaml(path, data):
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(yaml.safe_dump(data, sort_keys=False))

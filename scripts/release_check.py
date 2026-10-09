@@ -20,15 +20,23 @@ Releases are looked up in the repo named by fleet/defaults.yml
 mssp_catalog.release_base — the same place converge downloads from.
 
 Needs GH_TOKEN (or GITHUB_TOKEN) to read a private repo's releases; ring-gate
-passes the workflow token (contents: read is enough). Without a token the
-check is skipped with a notice, so it can run in offline local checks.
+passes the workflow token (contents: read is enough). The check is SKIPPED with
+a notice — never failed — when it cannot see the releases at all:
+  * no token (offline local runs);
+  * release_base is not on the GitHub this workflow runs on (the token is only
+    valid there);
+  * release_base names a repo the token cannot read (packs moved to their own
+    repo, or the YOUR-ORG placeholder not yet replaced).
+Works on github.com, <company>.ghe.com and GitHub Enterprise Server alike: the
+host and API come from GITHUB_SERVER_URL / GITHUB_API_URL (see github_host.py).
+Any other API failure (rate limit, 5xx, network) fails with a clear message.
 
 Usage:
     GH_TOKEN=... python scripts/release_check.py
 """
+import functools
 import json
 import os
-import re
 import sys
 import urllib.error
 import urllib.request
@@ -37,9 +45,8 @@ from pathlib import Path
 import yaml
 
 import resolve
+from github_host import api_url, parse_release_base, server_url
 from mssp_catalog import release_base
-
-_REPO_RE = re.compile(r"https://github\.com/([^/]+)/([^/]+)/releases/download/?$")
 
 
 def pinned_versions(fleet):
@@ -47,11 +54,13 @@ def pinned_versions(fleet):
     out = []
     for f in sorted((fleet / "pins").glob("*.yml")):
         for pid, ver in ((yaml.safe_load(f.read_text()) or {}).get("pins") or {}).items():
-            out.append((f"fleet/pins/{f.name}", pid, str(ver)))
+            if ver not in (None, ""):  # an empty pin is resolve.py's error to report
+                out.append((f"fleet/pins/{f.name}", pid, str(ver)))
     for f in sorted((fleet / "tenants").glob("*.yml")):
         overrides = (yaml.safe_load(f.read_text()) or {}).get("pin_overrides") or {}
         for pid, ver in overrides.items():
-            out.append((f"fleet/tenants/{f.name} pin_overrides", pid, str(ver)))
+            if ver not in (None, ""):
+                out.append((f"fleet/tenants/{f.name} pin_overrides", pid, str(ver)))
     return out
 
 
@@ -76,22 +85,51 @@ def problems(pins, current_versions, has_release):
     return out
 
 
+class ReleaseLookupError(Exception):
+    """The releases API could not be queried (not a plain 'no such release')."""
+
+
+def _get_json(url, token):
+    req = urllib.request.Request(url, headers={
+        "Authorization": f"token {token}",
+        "Accept": "application/vnd.github+json"})
+    with urllib.request.urlopen(req, timeout=30) as resp:
+        return json.loads(resp.read().decode("utf-8"))
+
+
+def repo_readable(owner, repo, token):
+    """True if the token can see owner/repo (GitHub answers 404 for both
+    'missing' and 'no access', so either way the releases are invisible)."""
+    try:
+        _get_json(f"{api_url()}/repos/{owner}/{repo}", token)
+        return True
+    except urllib.error.HTTPError as e:
+        if e.code == 404:
+            return False
+        raise ReleaseLookupError(f"GET repos/{owner}/{repo}: HTTP {e.code}") from e
+    except urllib.error.URLError as e:
+        raise ReleaseLookupError(f"GET repos/{owner}/{repo}: {e.reason}") from e
+
+
 def github_has_release(owner, repo, token):
-    """has_release(tag) backed by the GitHub releases API."""
+    """has_release(tag) backed by the GitHub releases API, one call per tag."""
+    @functools.lru_cache(maxsize=None)
     def has_release(tag):
-        req = urllib.request.Request(
-            f"https://api.github.com/repos/{owner}/{repo}/releases/tags/{tag}",
-            headers={"Authorization": f"token {token}",
-                     "Accept": "application/vnd.github+json"})
         try:
-            with urllib.request.urlopen(req, timeout=30) as resp:
-                rel = json.loads(resp.read().decode("utf-8"))
+            rel = _get_json(
+                f"{api_url()}/repos/{owner}/{repo}/releases/tags/{tag}", token)
         except urllib.error.HTTPError as e:
             if e.code == 404:
                 return False
-            raise
+            raise ReleaseLookupError(f"release {tag}: HTTP {e.code}") from e
+        except urllib.error.URLError as e:
+            raise ReleaseLookupError(f"release {tag}: {e.reason}") from e
         return f"{tag}.zip" in {a.get("name") for a in rel.get("assets", [])}
     return has_release
+
+
+def skip(reason):
+    print(f"· release check skipped — {reason}")
 
 
 def main():
@@ -103,14 +141,23 @@ def main():
 
     token = os.environ.get("GH_TOKEN") or os.environ.get("GITHUB_TOKEN")
     if not token:
-        print("· release check skipped — no GH_TOKEN/GITHUB_TOKEN (runs in ring-gate)")
-        return
-    m = _REPO_RE.match(release_base())
-    if not m:
-        sys.exit(f"ERROR: mssp_catalog.release_base '{release_base()}' is not a "
-                 f"https://github.com/<owner>/<repo>/releases/download URL")
+        return skip("no GH_TOKEN/GITHUB_TOKEN (runs in ring-gate)")
+    base = release_base()
+    parsed = parse_release_base(base)
+    if not parsed:
+        return skip(f"release_base '{base}' is not a releases URL on {server_url()}, "
+                    f"the GitHub this workflow's token belongs to")
+    owner, repo = parsed
 
-    found = problems(pins, current, github_has_release(m[1], m[2], token))
+    try:
+        this_repo = os.environ.get("GITHUB_REPOSITORY", "").lower()
+        if f"{owner}/{repo}".lower() != this_repo and not repo_readable(owner, repo, token):
+            return skip(f"this workflow's token can't read {owner}/{repo} (release_base)")
+        found = problems(pins, current, github_has_release(owner, repo, token))
+    except ReleaseLookupError as e:
+        sys.exit(f"ERROR: could not query releases in {owner}/{repo} ({e}) — "
+                 f"re-run the check; a rate limit or GitHub outage is usually transient")
+
     if found:
         print(f"✗ {len(found)} pinned MSSP pack version(s) can never deploy:")
         for msg in found:

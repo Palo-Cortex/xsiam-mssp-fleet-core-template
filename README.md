@@ -219,6 +219,14 @@ repo's Releases; when the repo is private their `browser_download_url`s 404, so
 `deploy_tenant.py` fetches them through the assets API with the workflow token
 (`contents: read` — no extra secret; public/upstream artifacts are unaffected).
 
+**GitHub Enterprise.** The fleet runs on github.com, Enterprise Cloud with data
+residency (`<company>.ghe.com`), or GitHub Enterprise Server. Release downloads
+and ring-gate's release check use the GitHub the workflow runs on
+(`GITHUB_SERVER_URL` / `GITHUB_API_URL`), so set `mssp_catalog.release_base` to
+a URL on that same host. Upstream SOC Framework zips still come from github.com
+as public downloads, so Enterprise Server runners need outbound access to it.
+Also remove `queue: max` from `converge.yml` if your server doesn't support it.
+
 **Converge releases first, then fans out per tenant.** A push to main touching
 `fleet/pins/**`, `Packs/**`, or `fleet/config_overlays/**` first runs the
 release job (`release.yml`, publishing any MSSP pack version not yet released),
@@ -237,8 +245,14 @@ flowchart LR
 ```
 
 Converge runs for `main` are **queued, one at a time, in order** (a
-concurrency group with `queue: max`; none is ever cancelled), so a pin merged
-right after its pack bump converges only once the bump's release exists.
+concurrency group with `queue: max`, which holds up to 100 waiting runs instead
+of GitHub's default of one), so a pin merged right after its pack bump converges
+only once the bump's release exists. `queue:` needs GitHub.com; on GitHub
+Enterprise Server remove that line from `converge.yml`.
+
+Because every converge releases first, **a pack under `Packs/` that fails to
+build stops all converges** — even pushes that only change upstream pins —
+until it is fixed. ring-gate doesn't build zips, so this shows up after merge.
 
 **CI is green with zero setup:** `converge` runs a **dry-run** on every
 push (no secrets, no tenant writes) until you set the repo variable
@@ -254,9 +268,13 @@ converge job's prod ring.
 
 MSSP packs release as per-pack tagged GitHub Release zips (`release.yml`: tag
 `<id>-v<ver>`, asset `<id>-v<ver>.zip`; versions are immutable — a released
-version is never rebuilt, a release missing its zip is repaired, and a
-metadata-only zip is refused). Converge calls it as its first job, so releases
-always exist before any tenant is planned. The committed
+version is never rebuilt, and a metadata-only zip is refused). The tag is
+created on the commit the zip was built from. If a pack's *current* version has
+a release without its zip (a failed upload), the next run repairs it; older
+versions can't be rebuilt from `Packs/`. Converge calls it as its first job, so
+releases always exist before any tenant is planned. Releases publish only from
+the default branch: a manual converge on another branch that would publish
+fails instead. The committed
 `mssp_pack_catalog.json` indexes them with direct `zip_url`s; `catalog.py`
 resolves MSSP ids from that local file (no network) and falls through to the
 upstream catalog otherwise. A version-pinned MSSP pack fetches + uploads exactly

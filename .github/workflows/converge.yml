@@ -33,13 +33,20 @@
 # so no tenant is planned until this push's zips exist — a pack bump and its pin
 # can land in one push. The release job runs on every run (it finishes in
 # seconds when nothing is new) and has no `if:`, so plan/converge never inherit
-# a skip. If it fails, nothing converges.
+# a skip. If it fails, nothing converges — including pushes that only touch
+# upstream pins — until the broken pack under Packs/ is fixed. That's the
+# price of the ordering guarantee: a pack that can't be built blocks the fleet
+# rather than deploying around it.
 #
-# ONE RUN AT A TIME: the concurrency group queues runs for main in order and,
-# with `queue: max`, never cancels a waiting one. A pin merged right after its
-# pack bump therefore converges only after the bump's run (and its release) has
+# ONE RUN AT A TIME: the concurrency group queues runs for main in order. With
+# `queue: max`, up to 100 runs wait their turn instead of the newest replacing
+# the one already waiting (GitHub's default). A pin merged right after its pack
+# bump therefore converges only after the bump's run (and its release) has
 # finished, and every push still gets its own converge (plan diffs per push, so
-# a cancelled run would mean tenants that never converge).
+# a cancelled run would mean tenants that never converge). `queue:` needs
+# GitHub.com (May 2026+); where it isn't supported the workflow fails
+# validation, so drop the line there and accept that a burst of merges can
+# cancel a waiting run (re-run converge for that ring by hand).
 # ============================================================================
 name: converge
 
@@ -62,7 +69,7 @@ permissions:
 concurrency:
   group: converge-${{ github.ref }}
   cancel-in-progress: false
-  queue: max                # queue every waiting run (up to 100) instead of replacing it
+  queue: max                # up to 100 waiting runs, in order, instead of 1 (GitHub.com only)
 
 jobs:
   # -------------------------------------------------------------------------

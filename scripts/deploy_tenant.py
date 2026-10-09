@@ -293,7 +293,16 @@ def sdk_upload(zip_path, creds, config_overlay=None):
         packs = Path(root) / "Packs"
         packs.mkdir()
         with zipfile.ZipFile(zip_path) as zf:
-            zf.extractall(packs)
+            """
+            Encountered error in converge action.
+            Packs with multiple directories were not evaluating from releases properly.
+            Added conditional to prevent false positive DeployError.
+            """
+            if "pack_metadata.json" in zf.namelist():
+                zf.extractall(packs / "Staged") # Automatically creates directory for pack
+            else:
+                zf.extractall(packs) # original methodology, preserves regression
+                
         pack_dirs = [d for d in packs.iterdir() if d.is_dir()]
         if len(pack_dirs) != 1:
             raise DeployError(

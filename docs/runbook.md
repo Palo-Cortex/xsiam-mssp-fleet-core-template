@@ -5,6 +5,10 @@ packs) lives in `defaults.yml`/`groups`/`tenants`; versions live per ring in
 `fleet/pins/<ring>.yml`.
 
 ## Add a new managed tenant
+> **TUI shortcut:** `python scripts/tenant_tui.py` does steps 1–2 visually —
+> create/edit the profile with live `resolve.py` validation, a YAML preview,
+> and an "add missing pins" helper for `fleet/pins/<ring>.yml` (with ring-gate
+> warnings). Steps 3–4 (secrets, merge) are unchanged.
 1. Create `fleet/tenants/<tenant>.yml` (copy the closest profile). Set `ring`,
    `credentials_ref`, and either `groups:` (managed as a group) or `extras:`
    (self-managed). Ring membership is just this `ring:` field — there is no
@@ -107,6 +111,11 @@ semantics, converge fan-out, drift):
 ## Remove a pack from a tenant/ring
 Composition decides membership; pins only supply versions. So removal is a
 **composition** edit:
+
+> **TUI shortcut:** `python scripts/tenant_tui.py` does both steps — edit the
+> tenant's composition, then "Remove unused pins…" cleans up
+> `fleet/pins/<ring>.yml`. It only lists pins no tenant in the ring still
+> composes (given your current edit) and warns to save the tenant first.
 
 1. Delete the pack ID from wherever it is composed — `defaults.yml` `base:`
    (fleet-wide), a group's `extras:`, or the tenant's `extras:`. That alone is

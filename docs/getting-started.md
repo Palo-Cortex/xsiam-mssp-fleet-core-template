@@ -145,6 +145,7 @@ pack (see the runbook's tenant-authored content section).
 | Change what every tenant gets | `fleet/defaults.yml › base` |
 | Bundle vendor packs | `fleet/groups/<group>.yml` |
 | Add/adjust a tenant | `fleet/tenants/<tenant>.yml` |
+| Add/adjust a tenant visually | `scripts/tenant_tui.py` (TUI) |
 | Bump a version (dev first) | `fleet/pins/dev.yml` |
 | Promote a version | `scripts/promote.py` / the promote workflow |
 | Tune a config List per tenant | `fleet/config_overlays/<tenant>.yml` |

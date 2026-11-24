@@ -6,6 +6,12 @@ customer tenants — with per-ring version pins, `demisto-sdk` as the only
 transport, and customers able to layer their own content on the same tenants
 without collisions.
 
+> **New here? Run `python scripts/setup_wizard.py`.** It asks how you promote
+> content (Dev → QA → Prod, QA → Prod or Dev → Prod), connects and verifies each
+> XSIAM tenant, and switches on the GitHub protections — see
+> [`docs/setup-wizard.md`](docs/setup-wizard.md). `setup_wizard.py doctor`
+> re-checks everything later.
+
 This repo is a **template**: a complete, self-contained fleet repo with example
 tenants, groups, pins, and one example MSSP-authored pack. Everything runs
 offline out of the box (CI stays green with zero setup), and every example name
@@ -103,6 +109,7 @@ scripts/
 ├── ring_gate.py          # ▶ path-aware promotion policy check (soak/no-skip/change-window/no-local/rollback); CI runs the base branch's copy
 ├── plan_converge.py      # ▶ which tenants a converge run deploys (whole-push diff, window re-check, canary waves)
 ├── lock.py               # ▶ artifact lock: pack@version → zip URL + sha256 (fleet/artifacts.lock.yml)
+├── setup_wizard.py       # ▶ guided setup / add-tenant / doctor (code in scripts/fleet_setup/)
 ├── promote.py            # ▶ copy a pin forward into the next ring
 └── load_creds.py         # resolve ONE tenant's creds in CI (the only credential-store seam)
 tests/ · pytest.ini       # ▶ the pytest suite; ring-gate runs it on every PR
@@ -112,7 +119,8 @@ tests/ · pytest.ini       # ▶ the pytest suite; ring-gate runs it on every PR
 ├── ring-gate.yml         # required PR + merge-queue check: pytest + resolve + namespace_lint + lock + ring_gate (from base) + catalog sync + release check
 ├── release.yml           # reusable (called first by converge; or manual) → tag <id>-v<ver> + GitHub Release with the pack zip
 ├── promote.yml           # workflow_dispatch → pin-copy + lock PR (opened as a GitHub App so ring-gate runs)
-└── drift.yml             # workflow_dispatch drift report: per-tenant fetch jobs → one updated `drift` issue
+├── drift.yml             # workflow_dispatch drift report: per-tenant fetch jobs → one updated `drift` issue
+└── doctor.yml            # workflow_dispatch: test each tenant's stored key where converge uses it
 fixtures/ · docs/
 ```
 

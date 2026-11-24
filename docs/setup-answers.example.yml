@@ -1,0 +1,60 @@
+# Answers for an unattended setup:
+#   ACME_QA_KEY=... ACME_PROD_KEY=... python scripts/setup_wizard.py --answers this-file.yml
+# Anything omitted takes the wizard's default. NEVER put secrets here — each
+# `api_key_env` names an environment variable that holds the key.
+
+org:
+  mssp: false
+  topology: qa-prod            # dev-qa-prod | qa-prod | dev-prod
+  mssp_ring: false             # MSSPs only: own parent tenant on a separate track
+  soak:
+    prod: 3                    # days a version runs in qa before prod
+  change_window: true
+  window:
+    days: Tue,Wed,Thu
+    start: "14:00"             # UTC
+    end: "22:00"
+  self_publish: true           # some tenant owners publish their own content
+  keep_example_pack: false
+
+content:
+  base: [soc-optimization-unified, soc-framework-nist-ir-ai]
+
+tenants:
+  - api_url: https://api-acme-qa.xdr.us.paloaltonetworks.com
+    api_key_id: "12"
+    api_key_env: ACME_QA_KEY
+    name: acme-qa
+    ring: qa
+    add_extras: true
+    extras: [soc-crowdstrike-falcon]
+  - api_url: https://api-acme.xdr.us.paloaltonetworks.com
+    api_key_id: "7"
+    api_key_env: ACME_PROD_KEY
+    name: acme-prod
+    display_name: Acme Corp
+    ring: prod
+    canary: true
+    self_publish: true
+    prefix: acme-
+
+owners:
+  approvers: "@alice @acme/secops"
+  approvals: 1
+  code_owners: true
+
+app:
+  setup: false                 # or: setup: true, id: "123456", private_key_path: ~/app.pem
+
+verify:
+  lock: true
+
+publish:
+  confirm: true
+
+protect:
+  merge_queue: true
+
+live:
+  remote_check: true
+  enable: false

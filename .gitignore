@@ -9,3 +9,6 @@ drift.json
 # demisto-sdk zip-packs droppings (release workflow builds these ephemerally)
 dist/
 Packs/*/metadata.json
+
+# setup wizard progress (answers only, never secrets)
+.fleet-setup/

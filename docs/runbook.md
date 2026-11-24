@@ -5,6 +5,9 @@ packs) lives in `defaults.yml`/`groups`/`tenants`; versions live per ring in
 `fleet/pins/<ring>.yml`.
 
 ## Add a new managed tenant
+> **Easiest:** `python scripts/setup_wizard.py add-tenant` — verifies the API key
+> against the tenant, stores the secret in the right Environment, writes the
+> profile and opens the PR. The steps below are the manual equivalent.
 > **TUI shortcut:** `python scripts/tenant_tui.py` does steps 1–2 visually —
 > create/edit the profile with live `resolve.py` validation, a YAML preview,
 > and an "add missing pins" helper for `fleet/pins/<ring>.yml` (with ring-gate

@@ -1,0 +1,14 @@
+# Group = a reusable bundle of EXTRA (Tier 3 / vendor) pack IDs.
+# Tenants subscribe to a group instead of listing each vendor pack themselves,
+# so one edit here changes every subscribing tenant ("managed as a group").
+# Pack IDs only — versions are pinned per ring in fleet/pins/<ring>.yml.
+group: financial-endpoint-heavy
+description: >
+  Endpoint-led detection bundle for financial-sector tenants. Layers VirusTotal
+  enrichment, Microsoft Defender for Endpoint, and Entra ID identity signals on
+  top of the base.
+
+extras:
+  - VirusTotal                # Marketplace-sourced example — replace with packs your catalogs carry
+  - SocFrameworkMicrosoftDefender
+  - soc-microsoft-entra-id

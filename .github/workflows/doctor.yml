@@ -1,0 +1,70 @@
+# ============================================================================
+# doctor.yml — test every tenant's stored credentials, where converge uses them
+# ----------------------------------------------------------------------------
+# Started by `python scripts/setup_wizard.py doctor --remote` (or by hand).
+# One job per tenant, in that tenant's ring Environment, with ONLY its own
+# secret: checks the API host belongs to the tenant (the converge host guard)
+# and that the key can read installed packs. Read-only — never changes a tenant.
+#
+# Jobs in an Environment with required reviewers wait for approval, exactly as
+# converge does.
+# ============================================================================
+name: doctor
+
+on:
+  workflow_dispatch: {}
+
+permissions:
+  contents: read
+
+jobs:
+  plan:
+    runs-on: ubuntu-latest
+    outputs:
+      tenants: ${{ steps.plan.outputs.tenants }}
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5
+        with: { python-version: "3.12" }
+      - run: pip install -c requirements-ci.txt pyyaml
+      - id: plan
+        run: |
+          python - <<'PY' >> "$GITHUB_OUTPUT"
+          import json, yaml
+          from pathlib import Path
+          pol = (yaml.safe_load(open("fleet/policies.yml")) or {}).get("rings") or {}
+          out = []
+          for f in sorted(Path("fleet/tenants").glob("*.yml")):
+              t = yaml.safe_load(f.read_text()) or {}
+              out.append({"tenant": f.stem,
+                          "credentials_ref": t.get("credentials_ref") or f.stem.upper(),
+                          "environment": (pol.get(t.get("ring")) or {}).get("environment") or ""})
+          print(f"tenants={json.dumps(out)}")
+          PY
+
+  check:
+    needs: plan
+    if: needs.plan.outputs.tenants != '[]'
+    name: check ${{ matrix.t.tenant }}
+    runs-on: ubuntu-latest
+    environment: ${{ matrix.t.environment }}
+    strategy:
+      fail-fast: false
+      matrix:
+        t: ${{ fromJson(needs.plan.outputs.tenants) }}
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5
+        with: { python-version: "3.12" }
+      - run: pip install -c requirements-ci.txt pyyaml
+      - name: Credentials for ${{ matrix.t.tenant }}
+        env:
+          TENANT: ${{ matrix.t.tenant }}
+          FLEET_TENANT_CREDS: ${{ secrets[format('{0}_CREDS', matrix.t.credentials_ref)] }}
+          FLEET_TENANT_BASE_URL: ${{ secrets[format('{0}_BASE_URL', matrix.t.credentials_ref)] }}
+          FLEET_TENANT_API_KEY: ${{ secrets[format('{0}_API_KEY', matrix.t.credentials_ref)] }}
+          FLEET_TENANT_AUTH_ID: ${{ secrets[format('{0}_AUTH_ID', matrix.t.credentials_ref)] }}
+        run: |
+          set -euo pipefail
+          eval "$(python scripts/load_creds.py "$TENANT")"
+          python scripts/fleet_setup/remote_check.py "$TENANT"

@@ -1,5 +1,17 @@
 # Getting started — adopting this template
 
+> **Fastest path:** run the guided setup and let it do everything below:
+>
+> ```bash
+> pip install pyyaml && gh auth login
+> python scripts/setup_wizard.py
+> ```
+>
+> See [setup-wizard.md](setup-wizard.md). The rest of this page is the manual
+> equivalent — useful for understanding what the wizard sets up, or for
+> changing one piece by hand. `python scripts/setup_wizard.py doctor` checks a
+> hand-made setup the same way.
+
 This repo is a working fleet with **example everything**: four example tenants
 (`devlab01`, `qacanary01`, `prodcustomer01`, `msspparent`), three example
 groups, per-ring pins, and one example MSSP-authored pack. It runs green

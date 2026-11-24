@@ -1,0 +1,32 @@
+commonfields:
+  id: ExampleScript
+  version: -1
+name: ExampleScript
+script: ''
+type: python
+subtype: python3
+dockerimage: demisto/python3:3.12.13.10404775
+runonce: false
+tags: []
+comment: Echoes a message back as structured context output. Minimal exemplar of an MSSP-authored script shipped through the fleet's release, pin, and converge pipeline — replace with your own content when adopting the template.
+args:
+- name: message
+  description: The message to echo back into context.
+  required: true
+- name: uppercase
+  description: Whether to upper-case the message before returning it.
+  required: false
+  defaultValue: 'false'
+  auto: PREDEFINED
+  predefined:
+  - 'true'
+  - 'false'
+outputs:
+- contextPath: ExampleScript.Message
+  description: The echoed message.
+  type: String
+scripttarget: 0
+fromversion: 6.10.0
+marketplaces:
+- xsoar
+- marketplacev2

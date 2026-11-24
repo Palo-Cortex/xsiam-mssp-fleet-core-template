@@ -122,7 +122,7 @@ def assert_host_matches(r, creds):
 def mssp_authored_ids():
     """Pack ids whose source lives in this repo (Packs/<p>/pack_metadata.json)."""
     ids = []
-    packs = REPO / "Packs"
+    packs = _resolve.PACKS_DIR
     if not packs.exists():
         return ids
     for meta in packs.glob("*/pack_metadata.json"):
@@ -413,7 +413,7 @@ def sdk_upload_source(pack_name, creds):
     env = {**os.environ, **creds, "DEMISTO_SDK_IGNORE_CONTENT_WARNING": "1"}
     subprocess.run(
         ["demisto-sdk", "upload", "-i", f"Packs/{pack_name}", "--xsiam", "--zip"],
-        cwd=REPO, env=env, check=True,
+        cwd=_resolve.PACKS_DIR.parent, env=env, check=True,
     )
 
 

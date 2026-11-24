@@ -1,0 +1,23 @@
+# ============================================================================
+# pins/dev.yml  —  exact pack versions for the DEV ring
+# ----------------------------------------------------------------------------
+# One pin per pack that any dev-ring tenant resolves to. Dev is the head of the
+# promotion chain (see fleet/policies.yml): new versions are authored/bumped
+# here first, soak, then get COPIED FORWARD into qa.yml, then prod.yml. Editing
+# this file and merging to main converges only the dev ring.
+#
+# The artifact never changes between rings — only which ring points at it. So a
+# pack can legitimately be newer here than in qa/prod at the same time.
+#
+# Every pack a dev-ring tenant composes — base, group, or extra — needs a pin
+# here (resolve.py hard-errors otherwise). Versions below are EXAMPLES: re-pin
+# against the current upstream catalog when you adopt the template.
+# ============================================================================
+ring: dev
+pins:
+  soc-optimization-unified: 3.10.3
+  soc-framework-nist-ir: 1.6.3
+  VirusTotal: 2.7.22                   # financial-endpoint-heavy group (devlab01)
+  SocFrameworkMicrosoftDefender: 1.2.13  # financial-endpoint-heavy group (devlab01)
+  soc-microsoft-entra-id: 1.0.1        # financial-endpoint-heavy group (devlab01)
+  ExamplePack: 1.0.0                   # MSSP-authored; released artifact (mssp_pack_catalog.json)

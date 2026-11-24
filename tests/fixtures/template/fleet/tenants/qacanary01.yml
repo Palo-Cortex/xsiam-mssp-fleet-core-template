@@ -1,0 +1,20 @@
+# EXAMPLE TENANT — replace with your own (see docs/getting-started.md §3).
+# QA-ring canary. Base + VirusTotal extra (subscribes to the pin promoted
+# dev -> qa), so the qa converge actually installs it.
+tenant: qacanary01
+display_name: QA Canary 01 (qa)
+ring: qa
+credentials_ref: QACANARY01
+
+groups: []
+extras:
+  - VirusTotal                # pinned 2.7.22 in fleet/pins/qa.yml (promoted from dev)
+pin_overrides: {}
+custom: []
+
+# Optional host guard override. By default the converge asserts the target host
+# (from <REF>_CREDS.base_url) contains the normalized tenant name — refusing to
+# deploy if a swapped secret points at another tenant's host.
+# Set host_token only when the fleet name differs from the XSIAM subdomain, e.g.
+# fleet "acme-prod" but host "api-acmecorp01.xdr...". Matched as a substring.
+# host_token: acmecorp01

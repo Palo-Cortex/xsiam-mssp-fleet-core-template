@@ -1,0 +1,16 @@
+# ============================================================================
+# pins/prod.yml  —  exact pack versions for the PRODUCTION ring
+# ----------------------------------------------------------------------------
+# Fed by promotion from qa.yml, after the qa soak window and within a change
+# window (see fleet/policies.yml). A pin may only advance here to a version that
+# already sits in qa.yml. Merging a change here converges the prod ring under a
+# GitHub Environment approval gate.
+#
+# A vendor pin only lands here by promotion from qa (ring-gate enforces
+# no-skip + soak + change window).
+# Per-tenant exceptions live in the tenant's pin_overrides.
+# ============================================================================
+ring: prod
+pins:
+  soc-optimization-unified: 3.10.3
+  soc-framework-nist-ir: 1.6.3

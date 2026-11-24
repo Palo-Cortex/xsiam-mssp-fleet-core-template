@@ -48,6 +48,10 @@ import yaml
 
 REPO = Path(__file__).resolve().parents[1]
 FLEET = REPO / "fleet"
+# MSSP-authored pack source. A module setting (not REPO / "Packs" inline) so
+# tests can point it at tests/fixtures/Packs and stay independent of whatever
+# packs a real fleet repo carries.
+PACKS_DIR = REPO / "Packs"
 
 
 class ResolveError(Exception):
@@ -95,7 +99,7 @@ def local_packs():
     A missing/unreadable currentVersion yields None rather than crashing.
     """
     out = {}
-    packs = REPO / "Packs"
+    packs = PACKS_DIR
     if not packs.exists():
         return out
     for meta in sorted(packs.glob("*/pack_metadata.json")):

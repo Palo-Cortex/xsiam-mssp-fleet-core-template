@@ -12,6 +12,7 @@ def test_normalize_token_empty():
     assert normalize_token(None) == ""
 
 
-def test_resolve_derives_host_token_from_tenant_name():
-    r = resolve("qacanary01")
-    assert r["host_token"] == "qacanary01"
+def test_resolve_derives_host_token_from_tenant_name(temp_fleet):
+    temp_fleet.pins("qa", {})
+    t = temp_fleet.tenant("qacanary01", ring="qa")
+    assert resolve(t)["host_token"] == "qacanary01"

@@ -1,0 +1,12 @@
+# ============================================================================
+# pins/mssp.yml  —  exact pack versions for the MSSP PARENT ring
+# ----------------------------------------------------------------------------
+# Standalone ring: NOT part of the dev -> qa -> prod customer promotion chain
+# (policies.yml rings.mssp.source is null), so pins are authored freely here and
+# ring-gate applies no soak/no-skip check. Merging a change to this file
+# converges only the mssp ring (the parent tenant). Base-only for now.
+# ============================================================================
+ring: mssp
+pins:
+  soc-optimization-unified: 3.10.3
+  soc-framework-nist-ir: 1.6.3

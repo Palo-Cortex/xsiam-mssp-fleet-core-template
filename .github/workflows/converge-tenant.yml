@@ -1,0 +1,64 @@
+# ============================================================================
+# converge-tenant.yml — converge ONE tenant (reusable; called by converge.yml)
+# ----------------------------------------------------------------------------
+# Runs in the tenant's ring Environment (fleet/policies.yml
+# rings.<ring>.environment), so Environment-scoped secrets and protection rules
+# (required reviewers, wait timers, branch restrictions) apply per ring.
+#
+# Only THIS tenant's secret is mapped into the step:
+#   secrets.<credentials_ref>_CREDS  (packed JSON, preferred), or the legacy
+#   <credentials_ref>_BASE_URL / _API_KEY / _AUTH_ID trio.
+# `secrets: inherit` on the caller only makes secrets *addressable* here; a
+# secret reaches the process only if a step references it, and nothing below
+# references another tenant's.
+# ============================================================================
+name: converge-tenant
+
+on:
+  workflow_call:
+    inputs:
+      tenant: { required: true, type: string }
+      credentials_ref: { required: true, type: string }
+      environment: { required: false, type: string, default: "" }
+
+permissions:
+  contents: read
+
+jobs:
+  converge:
+    name: converge ${{ inputs.tenant }}
+    runs-on: ubuntu-latest
+    environment: ${{ inputs.environment }}
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with: { fetch-depth: 0 }        # orphan bounding reads fleet/pins history
+      - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5
+        with: { python-version: "3.12" }
+      - run: pip install -c requirements-ci.txt pyyaml
+
+      - name: Config Overlays (registered List ids, patch shape)
+        # ring-gate runs this on every PR, but a direct push to main bypasses it.
+        run: python scripts/config_overlay_lint.py
+
+      - name: Converge ${{ inputs.tenant }}
+        env:
+          FLEET_LIVE: ${{ vars.FLEET_LIVE }}
+          FLEET_ALLOW_DELETE: ${{ vars.FLEET_ALLOW_DELETE }}
+          TENANT: ${{ inputs.tenant }}
+          FLEET_TENANT_CREDS: ${{ secrets[format('{0}_CREDS', inputs.credentials_ref)] }}
+          FLEET_TENANT_BASE_URL: ${{ secrets[format('{0}_BASE_URL', inputs.credentials_ref)] }}
+          FLEET_TENANT_API_KEY: ${{ secrets[format('{0}_API_KEY', inputs.credentials_ref)] }}
+          FLEET_TENANT_AUTH_ID: ${{ secrets[format('{0}_AUTH_ID', inputs.credentials_ref)] }}
+          # lets deploy_tenant.py fetch MSSP release assets from this (private)
+          # repo via the assets API (contents: read)
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          if [ "${FLEET_LIVE:-}" = "true" ]; then
+            pip install -c requirements-ci.txt demisto-sdk pebble >/dev/null
+            eval "$(python scripts/load_creds.py "$TENANT")"
+            python scripts/deploy_tenant.py "$TENANT" --apply
+          else
+            echo "FLEET_LIVE is not 'true' → DRY-RUN (no tenant writes)."
+            python scripts/deploy_tenant.py "$TENANT"
+          fi

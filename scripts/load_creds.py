@@ -17,9 +17,16 @@ three env vars. Backend is selected by `fleet/defaults.yml > credentials_backend
 
 Backends
 --------
-github-environments  (default) — read from the CI job's secrets, passed in as the
-    ALL_SECRETS env var (JSON of `${{ toJson(secrets) }}`). Preferred PACKED form is
-    one secret per tenant (REF = the tenant's credentials_ref):
+github-environments  (default) — read from the CI job's secrets. The workflow maps
+    ONLY this tenant's secret into the step (never `toJson(secrets)` — that would
+    hand every tenant's keys to every job):
+
+        FLEET_TENANT_CREDS:    ${{ secrets[format('{0}_CREDS', ref)] }}
+        FLEET_TENANT_BASE_URL / _API_KEY / _AUTH_ID   (legacy flat form, optional)
+
+    ALL_SECRETS (JSON of every secret) is still read when present, for older
+    workflows, but is deprecated. Preferred PACKED form is one secret per tenant
+    (REF = the tenant's credentials_ref):
 
         <REF>_CREDS = {"base_url": "...", "api_key": "...", "auth_id": "..."}
 
@@ -67,12 +74,28 @@ def _backend():
     return d.get("credentials_backend", "github-environments")
 
 
+def _scoped_secrets(ref):
+    """This tenant's secrets as mapped into the step by the workflow, keyed the
+    way ALL_SECRETS would key them. Empty values (secret not defined) dropped."""
+    env = {f"{ref}_CREDS": "FLEET_TENANT_CREDS",
+           f"{ref}_BASE_URL": "FLEET_TENANT_BASE_URL",
+           f"{ref}_API_KEY": "FLEET_TENANT_API_KEY",
+           f"{ref}_AUTH_ID": "FLEET_TENANT_AUTH_ID"}
+    return {name: os.environ[var] for name, var in env.items() if os.environ.get(var)}
+
+
 def _from_github(ref):
-    """Resolve the trio from CI secrets (ALL_SECRETS JSON): packed, then flat."""
-    raw = os.environ.get("ALL_SECRETS")
-    if not raw:
-        raise CredsError("ALL_SECRETS not set (workflow must pass toJson(secrets))")
-    secrets = json.loads(raw)
+    """Resolve the trio from CI secrets: per-tenant FLEET_TENANT_* env (preferred)
+    or the deprecated ALL_SECRETS JSON; packed form first, then flat."""
+    secrets = _scoped_secrets(ref)
+    if not secrets:
+        raw = os.environ.get("ALL_SECRETS")
+        if not raw:
+            raise CredsError(
+                f"no credentials in env for '{ref}' — the workflow must map "
+                f"secrets.{ref}_CREDS into FLEET_TENANT_CREDS (and run the job in "
+                f"the ring's Environment if the secret is Environment-scoped)")
+        secrets = json.loads(raw)
 
     packed = secrets.get(f"{ref}_CREDS")
     if packed:

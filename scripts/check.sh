@@ -7,6 +7,7 @@
 #   * namespace_lint.py                (fleet side of the namespace contract)
 #   * mssp_catalog.py --check          (catalog in sync with Packs/ metadata)
 #   * config_overlay_lint.py           (Config Overlay ids + patch shape)
+#   * lock.py --check                  (require_lock rings have lock entries)
 # No network, no git history. ring_gate.py (soak / no-skip / change-window) and
 # pytest stay in CI — they need a PR base ref and are slower.
 # Wired as the pre-commit hook via .githooks/pre-commit; ring-gate on the PR
@@ -30,3 +31,4 @@ echo "✓ resolve — every tenant in every ring resolves against its ring's pin
 "$PY" scripts/namespace_lint.py
 "$PY" scripts/mssp_catalog.py --check
 "$PY" scripts/config_overlay_lint.py
+"$PY" scripts/lock.py --check

@@ -79,3 +79,11 @@ credentials_backend: github-environments
 # no ID inventory is ever exchanged between the two private repos.
 customer_namespaces:
   - acme-
+
+# ----------------------------------------------------------------------------
+# Never delete
+# ----------------------------------------------------------------------------
+# Pack ids converge must never orphan-delete, even if the fleet once pinned
+# them (e.g. a pack a customer now owns via Marketplace). Customer-prefixed ids
+# and each tenant's `custom:` ids are already protected.
+never_delete: []

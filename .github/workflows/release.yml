@@ -40,8 +40,8 @@ jobs:
   release:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-python@v5
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5
         with: { python-version: "3.12" }
 
       # Cheap check first: which pack versions are missing their release asset?
@@ -99,10 +99,10 @@ jobs:
 
       # pebble 5.2.x crashes at process-pool teardown on Python >= 3.12
       # (AttributeError: ChannelMutex has no writer_mutex), failing zip-packs
-      # after the zip is already built. Pin below 5.2 until fixed upstream.
+      # after the zip is already built. requirements-ci.txt pins it below 5.2.
       - name: Install demisto-sdk
         if: steps.missing.outputs.any == 'true'
-        run: pip install demisto-sdk "pebble<5.2" >/dev/null
+        run: pip install -c requirements-ci.txt demisto-sdk pebble >/dev/null
 
       - name: Release unpublished pack versions
         if: steps.missing.outputs.any == 'true'

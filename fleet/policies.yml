@@ -7,10 +7,22 @@
 # decides WHO reviews each pin file, and GitHub Environments decide WHO clicks
 # deploy.
 #
-# Keys enforced by ring_gate.py: source, min_soak_days, require_change_window,
-# change_windows (plus promotion_order). The require_dry_run and environment
-# keys document the intended GitHub setup but are not machine-enforced — wire
-# the Environment onto the converge job when going live (see the runbook).
+# Keys and who enforces them:
+#   source, min_soak_days        ring_gate.py on every PR (base-branch history)
+#   require_change_window,
+#   change_windows               ring_gate.py on the PR / merge queue, AND
+#                                converge before deploying the ring
+#   environment                  converge + drift run each tenant's job in this
+#                                GitHub Environment (secrets + approvals)
+#   require_lock                 lock.py --check (ring-gate) and deploy_tenant.py:
+#                                every pin needs an entry in artifacts.lock.yml
+#   max_parallel                 converge: tenants of this ring deployed at once
+#                                (after the ring's `canary: true` tenants succeed)
+#   require_dry_run              documentation only
+#
+# Break-glass rollback: a PR labelled `rollback` may return a ring to a version
+# it already ran, skipping no-skip/soak/window (review + Environment approval
+# still apply). See docs/runbook.md.
 #
 # MSSP-authored packs (source under Packs/) are soak-exempt ONLY when promoting
 # out of the head ring (dev -> qa): tenant-first content is never installed in
@@ -41,6 +53,8 @@ rings:
     source: dev             # a qa pin must already exist in dev.yml at that version
     min_soak_days: 0        # raise (e.g. 2) to soak third-party packs in dev; MSSP-authored packs are always exempt
     require_dry_run: true
+    require_lock: false     # set true once your qa pins are real (python scripts/lock.py --write)
+    max_parallel: 10
     environment: fleet-nonprod
 
   prod:
@@ -53,4 +67,9 @@ rings:
       - days: [Tue, Wed, Thu]
         start: "14:00"
         end: "22:00"
+    # RECOMMENDED true: prod deploys only sha256-verified, locked artifacts.
+    # Shipped false only because the template's example pins are placeholders
+    # with no real artifacts to lock — flip it after re-pinning (getting-started §6).
+    require_lock: false
+    max_parallel: 5         # tenants converged at once, after canary tenants pass
     environment: fleet-prod

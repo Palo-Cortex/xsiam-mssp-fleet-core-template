@@ -2,51 +2,45 @@
 # converge.yml — make a ring's tenants match that ring's pins
 # ----------------------------------------------------------------------------
 # Merging a change to fleet/pins/<ring>.yml on main IS the deploy authorisation
-# — there is no separate "deploy" button. This detects which
-# ring's pin file changed in the push and converges only that ring's tenants,
-# each via demisto-sdk with that tenant's own credentials.
+# — there is no separate "deploy" button. The plan job works out which tenants
+# the push affects; each tenant then converges in its own job, via demisto-sdk,
+# with ONLY its own credentials, under its ring's GitHub Environment.
 #
-# SAFETY: converge runs a DRY-RUN by default (prints the plan, touches
-# no tenant, needs no secrets). It only performs a live --apply when the repo
-# variable FLEET_LIVE == 'true' — flip that once real tenants and their
-# <credentials_ref>_* secrets exist. Until then every push stays green.
+# SAFETY: converge runs a DRY-RUN by default (prints the plan, touches no
+# tenant, needs no secrets). It only performs a live --apply when the repo
+# variable FLEET_LIVE == 'true'.
 #
-# A `plan` job computes the affected tenants (dispatch -> chosen ring; push ->
-# members of the changed rings) and emits them as a JSON array. The `converge`
-# job then fans out one job per tenant via a dynamic matrix, giving per-tenant
-# isolation and parallelism. When live you can split the prod ring into its own
-# job under the fleet-prod Environment for the approval gate + prod-scoped
-# secrets.
+# PLAN (scripts/plan_converge.py):
+#   * push      -> tenants of every ring whose pin file changed ANYWHERE in the
+#                  push (before..after, not just the last commit), plus rings /
+#                  tenants pinning a changed Packs/ pack to `local`, plus the
+#                  tenants a changed Config Overlay layer composes into.
+#   * dispatch  -> every tenant of the chosen ring.
+#   * CHANGE WINDOW re-check: a ring with require_change_window is dropped
+#     outside its window (the `blocked` job then fails the run so it's visible)
+#     unless the push only rolls the ring back to versions it already ran, or a
+#     dispatch sets break_glass. ring-gate checks the window when the PR is
+#     tested; this catches PRs merged later than that.
 #
-# Packs/** is a trigger too: for a pack pinned to the "local" sentinel the
-# source IS the deployable content, so a push touching Packs/<dir>/ converges
-# every ring whose pin file (or tenant whose pin_overrides) pins that pack
-# `local`. Version-pinned packs are unaffected by Packs/ edits.
+# ROLLOUT: tenants with `canary: true` converge first (`canary` job); the rest
+# (`fleet` job) start only if every canary succeeded, at most
+# rings.<ring>.max_parallel at a time. One tenant failing never cancels others
+# in the same wave (fail-fast: false).
 #
-# fleet/config_overlays/** is the third trigger: a tenant's deployed config
-# Lists are `pinned ⊕ Config Overlay`, so an overlay edit changes deployed
-# content with no pin change at all. defaults.yml is the
-# fleet-wide layer and converges every ring; <tenant>.yml converges that tenant.
+# SECRETS: each tenant job maps only secrets.<credentials_ref>_CREDS (see
+# converge-tenant.yml) and runs in rings.<ring>.environment from policies.yml —
+# put prod tenants' secrets in the fleet-prod Environment and add required
+# reviewers there; nonprod jobs then cannot read them.
 #
 # RELEASE BEFORE CONVERGE: the first job calls release.yml, which publishes any
-# MSSP pack version under Packs/ that has no release zip yet. `plan` needs it,
-# so no tenant is planned until this push's zips exist — a pack bump and its pin
-# can land in one push. The release job runs on every run (it finishes in
-# seconds when nothing is new) and has no `if:`, so plan/converge never inherit
-# a skip. If it fails, nothing converges — including pushes that only touch
-# upstream pins — until the broken pack under Packs/ is fixed. That's the
-# price of the ordering guarantee: a pack that can't be built blocks the fleet
-# rather than deploying around it.
+# MSSP pack version under Packs/ that has no release zip yet, so a pack bump and
+# its pin can land in one push. If it fails, nothing converges until the broken
+# pack is fixed.
 #
-# ONE RUN AT A TIME: the concurrency group queues runs for main in order. With
-# `queue: max`, up to 100 runs wait their turn instead of the newest replacing
-# the one already waiting (GitHub's default). A pin merged right after its pack
-# bump therefore converges only after the bump's run (and its release) has
-# finished, and every push still gets its own converge (plan diffs per push, so
-# a cancelled run would mean tenants that never converge). `queue:` needs
-# GitHub.com (May 2026+); where it isn't supported the workflow fails
-# validation, so drop the line there and accept that a burst of merges can
-# cancel a waiting run (re-run converge for that ring by hand).
+# ONE RUN AT A TIME: runs for main queue in order (`queue: max` holds up to 100
+# waiting runs instead of GitHub's default of one). Where `queue:` isn't
+# supported (GitHub Enterprise Server) the workflow fails validation — drop the
+# line and accept that a burst of merges can cancel a waiting run.
 # ============================================================================
 name: converge
 
@@ -62,6 +56,11 @@ on:
         default: dev
         type: choice
         options: [dev, qa, prod, mssp]
+      break_glass:
+        description: "Deploy a change-windowed ring OUTSIDE its window (emergency only)"
+        required: false
+        default: false
+        type: boolean
 
 permissions:
   contents: read
@@ -72,166 +71,97 @@ concurrency:
   queue: max                # up to 100 waiting runs, in order, instead of 1 (GitHub.com only)
 
 jobs:
-  # -------------------------------------------------------------------------
-  # release — publish any unreleased MSSP pack versions before planning.
-  # A called workflow only gets the permissions its caller grants, so
-  # contents: write must be set HERE (without it, `gh release create` 403s).
-  # -------------------------------------------------------------------------
   release:
     uses: ./.github/workflows/release.yml
     permissions:
       contents: write
 
-  # -------------------------------------------------------------------------
-  # plan — compute the affected tenants and emit them as a JSON array for the
-  # converge job's matrix. Empty array => the converge job is skipped entirely.
-  # -------------------------------------------------------------------------
   plan:
     needs: release
     runs-on: ubuntu-latest
     outputs:
-      tenants: ${{ steps.plan.outputs.tenants }}
+      canary: ${{ steps.plan.outputs.canary }}
+      fleet: ${{ steps.plan.outputs.fleet }}
+      max_parallel: ${{ steps.plan.outputs.max_parallel }}
+      blocked: ${{ steps.plan.outputs.blocked }}
     steps:
-      - uses: actions/checkout@v4
-        with: { fetch-depth: 2 }        # need the previous commit to diff the push
-      - uses: actions/setup-python@v5
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with: { fetch-depth: 0 }        # whole push diff + pin history (rollback check)
+      - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5
         with: { python-version: "3.12" }
-      - run: pip install pyyaml
+      - run: pip install -c requirements-ci.txt pyyaml
 
       - name: Plan tenants
         id: plan
         env:
-          DISPATCH_RING: ${{ inputs.ring }}
           EVENT: ${{ github.event_name }}
+          BEFORE: ${{ github.event.before }}
+          AFTER: ${{ github.sha }}
+          DISPATCH_RING: ${{ inputs.ring }}
+          BREAK_GLASS: ${{ inputs.break_glass }}
         run: |
           set -euo pipefail
-
-          # Which tenants? (dispatch -> chosen ring; push -> members of changed
-          # rings, plus rings/tenants pinning a changed Packs/ pack to "local")
-          TENANTS=$(python - <<'PY'
-          import json, os, subprocess, yaml
-          from pathlib import Path
-
-          def tenants_in(ring):
-              return [f.stem for f in sorted(Path("fleet/tenants").glob("*.yml"))
-                      if (yaml.safe_load(open(f)) or {}).get("ring") == ring]
-
-          def diff_names(*paths):
-              out = subprocess.run(
-                  ["git", "diff", "--name-only", "HEAD^", "HEAD", "--", *paths],
-                  capture_output=True, text=True).stdout
-              return [l for l in out.splitlines() if l.strip()]
-
-          extra_tenants = []
-          if os.environ["EVENT"] == "workflow_dispatch":
-              rings = [os.environ["DISPATCH_RING"]]
-          else:
-              rings = sorted({Path(l).stem for l in diff_names("fleet/pins")})
-
-              # Packs/<dir>/** changed -> that pack's source is the deployable
-              # content wherever it is pinned "local": add every ring whose pin
-              # file says local, and every tenant whose pin_overrides says local.
-              changed_dirs = sorted({l.split("/")[1] for l in diff_names("Packs")
-                                     if l.count("/") >= 1})
-              ids = set()
-              for d in changed_dirs:
-                  meta = Path("Packs") / d / "pack_metadata.json"
-                  try:
-                      ids.add(json.loads(meta.read_text()).get("id") or d)
-                  except Exception:      # dir deleted/renamed or metadata unreadable
-                      ids.add(d)
-              for f in sorted(Path("fleet/pins").glob("*.yml")):
-                  pins = (yaml.safe_load(open(f)) or {}).get("pins") or {}
-                  if f.stem not in rings and any(pins.get(i) == "local" for i in ids):
-                      rings.append(f.stem)
-              for f in sorted(Path("fleet/tenants").glob("*.yml")):
-                  ov = (yaml.safe_load(open(f)) or {}).get("pin_overrides") or {}
-                  if any(ov.get(i) == "local" for i in ids):
-                      extra_tenants.append(f.stem)
-
-              # fleet/config_overlays/<layer>.yml changed -> the deployed config
-              # Lists of the tenants that layer composes into are stale. The
-              # fleet-wide layer (defaults.yml) affects every ring; a per-tenant
-              # layer affects exactly that tenant.
-              layers = [Path(l).stem for l in diff_names("fleet/config_overlays")
-                        if l.endswith(".yml")]
-              if "defaults" in layers:
-                  for f in sorted(Path("fleet/pins").glob("*.yml")):
-                      if f.stem not in rings:
-                          rings.append(f.stem)
-              for t in layers:
-                  # a layer deleted with its tenant has no profile left to converge
-                  if t != "defaults" and Path(f"fleet/tenants/{t}.yml").exists():
-                      extra_tenants.append(t)
-
-          seen = []
-          for r in rings:
-              for t in tenants_in(r):
-                  if t not in seen:
-                      seen.append(t)
-          for t in extra_tenants:
-              if t not in seen:
-                  seen.append(t)
-          print(json.dumps(seen))
+          args=(--event "$EVENT" --after "$AFTER")
+          if [ "$EVENT" = "workflow_dispatch" ]; then
+            args+=(--ring "$DISPATCH_RING")
+            [ "$BREAK_GLASS" = "true" ] && args+=(--break-glass) \
+              && echo "::warning::BREAK-GLASS converge of ring '$DISPATCH_RING' outside its change window"
+          else
+            args+=(--before "$BEFORE")
+          fi
+          python scripts/plan_converge.py "${args[@]}" > plan.json
+          cat plan.json
+          python - <<'PY' >> "$GITHUB_OUTPUT"
+          import json
+          p = json.load(open("plan.json"))
+          for k in ("canary", "fleet", "blocked"):
+              print(f"{k}={json.dumps(p[k])}")
+          print(f"max_parallel={p['max_parallel']}")
           PY
-          )
 
-          echo "tenants=$TENANTS" >> "$GITHUB_OUTPUT"
-          if [ "$TENANTS" = "[]" ]; then
-            echo "No pin or local-source changes in this push — nothing to converge."
-          else
-            echo "Converging: $TENANTS"
-          fi
-
-  # -------------------------------------------------------------------------
-  # converge — one job per affected tenant (dynamic matrix from plan output).
-  # Dry-run by default; live --apply only when repo var FLEET_LIVE == 'true'.
-  # -------------------------------------------------------------------------
-  converge:
+  canary:
     needs: plan
-    if: needs.plan.outputs.tenants != '[]'
-    runs-on: ubuntu-latest
+    if: needs.plan.outputs.canary != '[]'
     strategy:
-      fail-fast: false          # one tenant failing must not cancel the others
+      fail-fast: false
       matrix:
-        tenant: ${{ fromJson(needs.plan.outputs.tenants) }}
+        t: ${{ fromJson(needs.plan.outputs.canary) }}
+    uses: ./.github/workflows/converge-tenant.yml
+    with:
+      tenant: ${{ matrix.t.tenant }}
+      credentials_ref: ${{ matrix.t.credentials_ref }}
+      environment: ${{ matrix.t.environment }}
+    secrets: inherit
+
+  fleet:
+    needs: [plan, canary]
+    # run when there is a fleet wave and the canary wave passed or had nothing to do
+    if: >-
+      always() && needs.plan.result == 'success' &&
+      needs.plan.outputs.fleet != '[]' &&
+      (needs.canary.result == 'success' || needs.canary.result == 'skipped')
+    strategy:
+      fail-fast: false
+      max-parallel: ${{ fromJson(needs.plan.outputs.max_parallel) }}
+      matrix:
+        t: ${{ fromJson(needs.plan.outputs.fleet) }}
+    uses: ./.github/workflows/converge-tenant.yml
+    with:
+      tenant: ${{ matrix.t.tenant }}
+      credentials_ref: ${{ matrix.t.credentials_ref }}
+      environment: ${{ matrix.t.environment }}
+    secrets: inherit
+
+  blocked:
+    # Rings dropped by the change-window re-check: fail loudly so the merged
+    # but undeployed pins are visible. Re-run converge for that ring (dispatch)
+    # inside a window, or with break_glass in an emergency.
+    needs: plan
+    if: needs.plan.outputs.blocked != '[]'
+    runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-python@v5
-        with: { python-version: "3.12" }
-      - run: pip install pyyaml
-
-      - name: Config Overlays (registered List ids, patch shape)
-        # ring-gate runs this on every PR, but a direct push to main bypasses
-        # it. A bad List id would still surface at deploy time (an unconsumed
-        # id is an Incomplete Converge), but only AFTER uploads have started —
-        # this step fails the job before anything reaches a tenant.
-        run: python scripts/config_overlay_lint.py
-
-      - name: Converge ${{ matrix.tenant }}
-        env:
-          FLEET_LIVE: ${{ vars.FLEET_LIVE }}
-          # Orphan deletion stays off until this repo variable is 'true' —
-          # deploy_tenant.py only reports the bounded delete set otherwise.
-          FLEET_ALLOW_DELETE: ${{ vars.FLEET_ALLOW_DELETE }}
-          ALL_SECRETS: ${{ toJson(secrets) }}
-          TENANT: ${{ matrix.tenant }}
-          # lets deploy_tenant.py fetch MSSP release assets from this (private)
-          # repo via the assets API; public artifacts ignore it (contents: read)
-          GH_TOKEN: ${{ github.token }}
+      - env:
+          BLOCKED: ${{ needs.plan.outputs.blocked }}
         run: |
-          set -euo pipefail
-
-          if [ "${FLEET_LIVE:-}" = "true" ]; then
-            pip install demisto-sdk >/dev/null   # only needed for a live upload
-            # load_creds.py resolves this tenant's trio from CI secrets via the
-            # backend in defaults.yml (packed <REF>_CREDS JSON, flat fallback),
-            # masks the sensitive values, and exports DEMISTO_BASE_URL/_API_KEY
-            # + XSIAM_AUTH_ID for deploy_tenant.py. Swapping stores is a change
-            # in that one script, not here.
-            eval "$(python scripts/load_creds.py "$TENANT")"
-            python scripts/deploy_tenant.py "$TENANT" --apply
-          else
-            echo "FLEET_LIVE is not 'true' → DRY-RUN (no tenant writes)."
-            python scripts/deploy_tenant.py "$TENANT"
-          fi
+          echo "::error::converge withheld for: $BLOCKED"
+          exit 1

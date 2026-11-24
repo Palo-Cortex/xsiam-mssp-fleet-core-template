@@ -1,0 +1,13 @@
+# Exact pins for CI. converge jobs hold a tenant's XSIAM API key, so nothing
+# they install may float. Dependabot (.github/dependabot.yml) proposes bumps as
+# reviewed PRs. Local development can keep using requirements.txt.
+#
+# Install sets used by the workflows:
+#   base:      pyyaml                      (plan, drift, promote)
+#   gate:      pyyaml pytest textual       (ring-gate)
+#   deploy:    pyyaml demisto-sdk pebble   (converge-tenant, release)
+pyyaml==6.0.4
+pytest==9.2.0
+textual==8.2.8
+demisto-sdk==1.39.15
+pebble==5.1.3   # <5.2: 5.2.x crashes zip-packs pool teardown on py>=3.12

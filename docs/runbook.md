@@ -33,11 +33,31 @@ packs) lives in `defaults.yml`/`groups`/`tenants`; versions live per ring in
 1. Author/bump the version in `fleet/pins/dev.yml`; merge → `converge` deploys dev.
 2. Run **promote** (`promote.py --pack <id> --to qa`, or the workflow) → a PR
    copying the pin into `qa.yml`.
-3. The PR must pass **ring-gate**: version present in the source ring (no-skip),
-   soaked ≥ `min_soak_days` (from git history), and within a change window for prod.
-4. Merge → `converge` deploys qa. Repeat `--to prod` (prod merges under the
-   `fleet-prod` Environment approval). The artifact is identical across rings;
-   only the pin advances.
+3. The PR must pass **ring-gate**: version present in the source ring on main
+   (no-skip), soaked ≥ `min_soak_days` since it *merged* there, and within a
+   change window for prod. The promote workflow also records the artifact in
+   `fleet/artifacts.lock.yml` (`lock.py --write`); rings with `require_lock`
+   refuse unlocked pins.
+4. Merge → `converge` deploys qa. Repeat `--to prod` (prod tenants run under the
+   `fleet-prod` Environment approval; `canary: true` tenants go first). The
+   artifact is identical across rings; only the pin advances.
+
+## Roll back a bad version (break-glass)
+1. Revert the pin PR (or set the ring's pin back to the version it ran before).
+2. Add the **`rollback`** label. ring-gate accepts a return to a version that
+   ring already ran — no-skip, soak and the change window are waived. A version
+   the ring never ran is still fully gated, label or not.
+3. Merge (CODEOWNERS / reviewers still apply). converge deploys a rollback-only
+   push even outside the change window; prod still waits for `fleet-prod`
+   approval.
+4. Afterwards, fix forward through dev → qa → prod as normal.
+
+## Deploy outside a change window (emergency, non-rollback)
+Run the **converge** workflow by hand for the ring with **break_glass** ticked.
+It is logged as a warning on the run; use it only when a rollback isn't
+enough. A merge that converge withheld for the window (the `blocked` job
+failed) is deployed the same way — or by re-running converge for that ring
+inside the next window.
 
 ## Package tenant-authored content (author in dev, validate in qa)
 When custom content is built in the dev tenant's console (tenant-first), the
@@ -121,8 +141,9 @@ Composition decides membership; pins only supply versions. So removal is a
    (fleet-wide), a group's `extras:`, or the tenant's `extras:`. That alone is
    what removes it: on the next `converge`, the pack drops out of the resolved
    set, becomes an orphan, and is deleted via the XSIAM pack-delete API — but
-   only if it is in the bounded deletable set (upstream catalog ∪ MSSP-authored
-   ids). Anything else is reported, never deleted.
+   only if this fleet manages it (MSSP-authored, or ever pinned in
+   `fleet/pins/`) and it isn't protected (customer prefix, the tenant's
+   `custom:`, `defaults.yml › never_delete`). Anything else is never deleted.
 2. Then clean up its now-unused entries in `fleet/pins/<ring>.yml`. This is
    hygiene only — a pin nothing composes is never read and deploys nothing.
 

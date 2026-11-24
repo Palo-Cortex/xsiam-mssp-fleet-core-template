@@ -1,0 +1,12 @@
+# Keeps the SHA-pinned actions and the exact pins in requirements-ci.txt current
+# through reviewed PRs (ring-gate runs on them like any other change).
+version: 2
+updates:
+  - package-ecosystem: github-actions
+    directory: /
+    schedule: { interval: weekly }
+    groups:
+      actions: { patterns: ["*"] }
+  - package-ecosystem: pip
+    directory: /
+    schedule: { interval: weekly }

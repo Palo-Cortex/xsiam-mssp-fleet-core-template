@@ -96,20 +96,29 @@ packed form:
 ```
 
 (The flat trio `<REF>_BASE_URL` / `<REF>_API_KEY` / `<REF>_AUTH_ID` also
-works.) Scope prod tenants' secrets to a `fleet-prod` GitHub Environment so
-nonprod jobs cannot read them; `fleet/policies.yml` names the intended
-Environment per ring (`fleet-nonprod`, `fleet-prod`, `fleet-mssp`).
+works.) Each tenant's converge and drift job runs in its ring's GitHub
+Environment (`fleet/policies.yml › rings.<ring>.environment`: `fleet-nonprod`,
+`fleet-prod`, `fleet-mssp`) and maps only that tenant's secret. Store prod
+tenants' secrets **in the `fleet-prod` Environment** so nonprod jobs cannot
+read them.
 
-Recommended repo settings:
+Required repo settings:
 
-- Branch protection on `main` with **ring-gate** as a required check.
-- A `fleet-prod` Environment with required reviewers; when going live, add it
-  to the converge job's prod ring so prod merges deploy under approval.
+- **Branch protection on `main`**: require the **ring-gate / gate** check,
+  require pull requests, and don't allow bypassing. Enable **"Require review
+  from Code Owners"** after filling in `.github/CODEOWNERS`.
+- **Merge queue** on `main` (recommended): ring-gate re-runs at merge time, so
+  a prod PR tested inside a change window can't merge outside it.
+- **`fleet-prod` Environment** with required reviewers (and, ideally,
+  "Deployment branches: main only"). Converge already runs prod tenants in it.
+- **A GitHub App for promotions**: PRs opened with the default `GITHUB_TOKEN`
+  don't trigger ring-gate. Create an App with *Contents* and *Pull requests*
+  read/write, install it on this repo, and store `vars.FLEET_APP_ID` and
+  `secrets.FLEET_APP_PRIVATE_KEY`.
 - Settings → Actions → General: enable **"Allow GitHub Actions to create and
-  approve pull requests"** — the promote workflow opens its pin-copy PR with
-  `peter-evans/create-pull-request` and fails without it.
-- Create a `drift` issue label — the drift workflow labels the issues it opens
-  and GitHub's API does not auto-create labels.
+  approve pull requests"** (needed only if you skip the App).
+- Create **`rollback`** and **`promotion`** labels (break-glass rollbacks and
+  promote PRs use them).
 
 ## 5. Go live
 
@@ -132,6 +141,20 @@ lab tenant (see the README's "What still needs proving" section).
 `fleet/policies.yml` ships with lab-friendly values — qa soak is 0 days for
 fast testing. For production use, raise `min_soak_days` (e.g. qa: 2, prod: 5)
 and set your real prod change windows before onboarding customer tenants.
+
+Then lock your real artifacts and require the lock where it matters:
+
+```bash
+python scripts/lock.py --write     # zip URL + sha256 for every pin → fleet/artifacts.lock.yml
+```
+
+and set `require_lock: true` for `prod` (and ideally `qa`) in
+`fleet/policies.yml`. Converge then deploys only sha256-verified bytes in those
+rings, and ring-gate fails any pin without a lock entry. (The template ships
+`require_lock: false` only because its example pins are placeholders.)
+
+Tag one or two low-risk prod tenants `canary: true` and tune each ring's
+`max_parallel` — the rest of a ring waits for the canaries to converge.
 
 Dev → qa soak gates **third-party packs only**: MSSP-authored packs (source
 under `Packs/`) are soak-exempt out of the head ring, so raising qa's

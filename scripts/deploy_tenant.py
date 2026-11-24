@@ -19,15 +19,23 @@ Convergence has two halves:
                   Overlay`; a patched List id that no deployed
                   pack carries is itself a failure.
 
+  VERIFY          after the upserts, the tenant's installed versions are read
+                  back; a pack whose installed version != the one uploaded is a
+                  failure (demisto-sdk exiting 0 is not proof of install).
+
   REMOVE          an MSSP-owned pack installed on the tenant that is no longer
                   in its resolved composition (base + extras) is an ORPHAN and
-                  is deleted via
-                  the XSIAM pack-delete API. The deletable set is BOUNDED to ids
-                  the fleet could have installed (upstream catalog ∪ MSSP-
-                  authored packs); anything else on the tenant (e.g. a console-
-                  installed Marketplace pack, or customer-prefixed content) is
-                  never touched. Held (not run) if any
-                  upsert failed.
+                  is deleted via the XSIAM pack-delete API. The deletable set is
+                  BOUNDED to ids THIS FLEET has managed — MSSP-authored packs and
+                  any id that has ever appeared in fleet/pins/ (git history) or a
+                  current pin_override — never the upstream catalog, which an
+                  outside party controls. Customer prefixes, the tenant's
+                  `custom:` ids and defaults.yml `never_delete:` are excluded
+                  outright. Held (not run) if any upsert or verify failed.
+
+Locked artifacts: a pack@version with an entry in fleet/artifacts.lock.yml is
+fetched from its locked URL and its sha256 checked before upload; rings with
+`require_lock: true` refuse to apply an unlocked pack (see scripts/lock.py).
 
 Dry-run is the default: it prints the plan and touches nothing. --apply performs
 the fetch/upload/delete and requires the tenant's creds in the environment
@@ -44,7 +52,9 @@ import json
 import os
 import subprocess
 import sys
+import re
 import tempfile
+import time
 import urllib.error
 import urllib.parse
 import urllib.request
@@ -52,8 +62,10 @@ import zipfile
 import shutil
 from pathlib import Path
 
+import resolve as _resolve
 from resolve import (resolve, owned_pins, ResolveError, load, local_packs,
                      deep_merge)
+from lock import load_lock, lock_entry, ring_requires_lock, sha256_file
 from catalog import resolve_artifact, load_catalog, CatalogError
 from github_host import api_url, parse_release_asset
 
@@ -121,9 +133,51 @@ def mssp_authored_ids():
     return ids
 
 
-def deletable_set(catalog):
-    """Only ids the fleet could have installed are eligible for deletion."""
-    return {e.get("id") for e in catalog.get("packs", [])} | set(mssp_authored_ids())
+_PIN_LINE = re.compile(r"^[+-]\s+([A-Za-z0-9][\w.\-]*)\s*:")
+
+
+def pinned_history_ids():
+    """Every pack id that has EVER been pinned in fleet/pins/ (git history).
+
+    Removing a pin is exactly when an orphan must be deleted, so the current pin
+    files alone can't bound deletion — history can. A shallow or missing history
+    just yields fewer ids (fails safe: fewer deletions, never more)."""
+    out = subprocess.run(
+        ["git", "-C", str(REPO), "log", "-p", "--format=", "--", "fleet/pins"],
+        capture_output=True, text=True).stdout
+    return {m.group(1) for line in out.splitlines()
+            if not line.startswith(("+++", "---")) and (m := _PIN_LINE.match(line))}
+
+
+def fleet_managed_ids():
+    """Ids this fleet has deployed or could deploy: MSSP-authored packs, every
+    id in a pin file or pin_override now, and every id ever pinned."""
+    fleet = _resolve.FLEET
+    ids = set(mssp_authored_ids()) | pinned_history_ids()
+    for f in (fleet / "pins").glob("*.yml"):
+        ids |= set(((load(f) or {}).get("pins") or {}))
+    for f in (fleet / "tenants").glob("*.yml"):
+        ids |= set(((load(f) or {}).get("pin_overrides") or {}))
+    return ids
+
+
+def protected_ids_and_prefixes(r):
+    """(ids, prefixes) never deleted: the tenant's custom: ids, defaults.yml
+    never_delete:, and every registered customer namespace prefix."""
+    defaults = load(_resolve.FLEET / "defaults.yml") or {}
+    prefixes = list(defaults.get("customer_namespaces") or [])
+    if r.get("customer_namespace"):
+        prefixes.append(r["customer_namespace"])
+    ids = {c["id"] if isinstance(c, dict) else c for c in r.get("custom") or []}
+    ids |= set(defaults.get("never_delete") or [])
+    return ids, tuple(p for p in prefixes if p)
+
+
+def deletable_set(r):
+    """Only ids this fleet manages, minus anything protected."""
+    protected, prefixes = protected_ids_and_prefixes(r)
+    return {pid for pid in fleet_managed_ids()
+            if pid not in protected and not (prefixes and pid.startswith(prefixes))}
 
 
 # --- live tenant I/O (only exercised under --apply) -------------------------
@@ -374,6 +428,8 @@ def build_plan(r, offline):
     """
     installs, unresolved = [], []
     catalog = None if offline else load_catalog(r["catalog"], r["catalog_pinned_commit"])
+    lock = load_lock()
+    needs_lock = ring_requires_lock(r["ring"])
     for p in r["base"] + r["extras"]:
         if p.get("source") == "local":
             if p["version"] is None:
@@ -386,7 +442,16 @@ def build_plan(r, offline):
             continue
         item = {"id": p["id"], "version": p["version"], "zip_url": None,
                 "exact": None, "source": "upstream"}
-        if not offline:
+        entry = lock_entry(lock, p["id"], p["version"])
+        if entry:
+            # locked: exact URL + digest, no catalog walk, no retag guessing
+            item.update(zip_url=entry["zip_url"], exact=True,
+                        sha256=entry.get("sha256"), locked=True)
+        elif needs_lock:
+            unresolved.append((p["id"], (
+                f"ring '{r['ring']}' requires a lock entry for {p['id']} "
+                f"{p['version']} — run scripts/lock.py --write")))
+        elif not offline:
             try:
                 art = resolve_artifact(p["id"], p["version"], r["catalog"],
                                        r["catalog_pinned_commit"])
@@ -397,13 +462,29 @@ def build_plan(r, offline):
     return installs, unresolved, catalog
 
 
-def compute_orphans(r, installed, catalog):
-    """Installed MSSP-owned packs no longer resolved, within the deletable set."""
-    if catalog is None:
-        return None  # cannot bound the set offline without the catalog
+def compute_orphans(r, installed, catalog=None):
+    """Installed fleet-managed packs no longer resolved, within the deletable
+    set. `catalog` is unused (kept for call compatibility): deletion is bounded
+    by what this fleet has managed, not by what upstream happens to publish."""
     want = set(owned_pins(r))
-    deletable = deletable_set(catalog)
+    deletable = deletable_set(r)
     return sorted(pid for pid in installed if pid in deletable and pid not in want)
+
+
+def verify_installed(creds, expected, attempts=3, delay=10):
+    """Read installed versions back; {id: (wanted, installed)} for mismatches.
+
+    Retries briefly — an install can lag the upload response."""
+    bad = {}
+    for i in range(attempts):
+        got = list_installed(creds)
+        bad = {pid: (want, got.get(pid)) for pid, want in expected.items()
+               if str(got.get(pid)) != str(want)}
+        if not bad:
+            return {}
+        if i < attempts - 1:
+            time.sleep(delay)
+    return bad
 
 
 # --- convergence ------------------------------------------------------------
@@ -441,6 +522,7 @@ def converge(tenant, apply, offline, installed_fixture):
             print(f"  {it['id']:<34} {(it['version'] or '?'):<10} (local source)")
             continue
         tag = "" if it["exact"] in (True, None) else "  (catalog!=pin, retagged)"
+        tag += "  [locked]" if it.get("locked") else ""
         print(f"  {it['id']:<34} {(it['version'] or '?'):<10} {it['zip_url'] or '(offline)'}{tag}")
     for c in r["custom"]:
         print(f"  # custom (owner={c.get('owner','customer')}) {c['id']} — not managed here")
@@ -495,6 +577,13 @@ def converge(tenant, apply, offline, installed_fixture):
             else:
                 zpath = download(it["zip_url"])
                 try:
+                    if it.get("sha256"):
+                        actual = sha256_file(zpath)
+                        if actual != it["sha256"]:
+                            raise DeployError(
+                                f"sha256 mismatch for {it['id']} {it['version']}: "
+                                f"locked {it['sha256'][:12]}…, fetched {actual[:12]}… "
+                                f"— the release asset changed; refusing to upload")
                     # The Config Overlay is offered to every fetched pack; the
                     # pack that CARRIES a patched List consumes its id, and the
                     # merge rides this pack's failure unit. With
@@ -511,6 +600,16 @@ def converge(tenant, apply, offline, installed_fixture):
             failures.append((it["id"], it["version"], first))
             pack_failures += 1
             print(f"  ✗ FAILED {it['id']} {it['version']}: {first}")
+
+    # VERIFY: read back what is actually installed for the packs that uploaded.
+    failed_ids = {f[0] for f in failures}
+    expected = {it["id"]: it["version"] for it in installs if it["id"] not in failed_ids}
+    if expected:
+        for pid, (want, got) in sorted(verify_installed(creds, expected).items()):
+            err = f"installed {got or 'nothing'} after upload, expected {want}"
+            failures.append((pid, want, err))
+            pack_failures += 1
+            print(f"  ✗ FAILED verify {pid}: {err}")
 
     # A patched List no deployed pack carried is a silent no-op at deploy time —
     # a typo'd id, a List that moved packs, or the pack that carries it having

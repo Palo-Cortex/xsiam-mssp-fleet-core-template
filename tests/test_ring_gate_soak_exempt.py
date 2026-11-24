@@ -20,9 +20,16 @@ POL = {"rings": {
 
 
 def _pin_state(monkeypatch, old, now_by_ring):
-    monkeypatch.setattr(ring_gate, "pins_at", lambda ref, ring: dict(old))
+    """The FIRST ring in now_by_ring is the one under evaluation: its base-branch
+    pins are `old`. Every other ring (the source) is unchanged by the PR, so its
+    base-branch pins equal its working-tree pins."""
+    target = next(iter(now_by_ring))
+    monkeypatch.setattr(
+        ring_gate, "pins_at",
+        lambda ref, ring: dict(old) if ring == target else dict(now_by_ring.get(ring, {})))
     monkeypatch.setattr(ring_gate, "pins_now",
                         lambda ring: dict(now_by_ring.get(ring, {})))
+    monkeypatch.setattr(ring_gate, "ring_history", lambda ring, ref: [])
 
 
 def test_mssp_authored_pack_skips_soak(monkeypatch):

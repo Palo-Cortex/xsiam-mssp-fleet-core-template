@@ -1,0 +1,16 @@
+# ============================================================================
+# CODEOWNERS — who must review what. Uncomment and replace the placeholder
+# teams with your own, then enable "Require review from Code Owners" in the
+# branch protection rule for main.
+#
+# The gate and the workflows are as sensitive as prod pins: ring-gate runs its
+# policy from the base branch, but a merged change to scripts/ or .github/
+# changes what every later PR is judged by.
+# ============================================================================
+# *                         YOUR-ORG/fleet-operators
+# /fleet/pins/prod.yml      YOUR-ORG/fleet-prod-approvers
+# /fleet/policies.yml       YOUR-ORG/fleet-admins
+# /fleet/artifacts.lock.yml YOUR-ORG/fleet-operators
+# /fleet/defaults.yml       YOUR-ORG/fleet-admins
+# /scripts/                 YOUR-ORG/fleet-admins
+# /.github/                 YOUR-ORG/fleet-admins

@@ -1,153 +1,180 @@
 # ============================================================================
 # drift.yml — fleet drift detection
 # ----------------------------------------------------------------------------
-# Only performs work if FLEET_LIVE variable is present in repository and true.
-# Performs calls to all configured tenants and updates installed_state.yml
-# Runs 'scripts/update_installed_state.py' on each tenant in fleet/tenants/
-# Utilizes that tenant's configured credentials via scripts/load_creds.py
-# NOTE: Does not push updated installed_state.yml to Repo
+# Only performs work if the FLEET_LIVE repo variable is 'true'.
 #
-# Compares each tenant's RESOLVED versions (ring pins) against installed
-# versions and opens an issue on drift. Reports only — drift never deletes
-# (that's converge's orphan step). Customer-prefixed content is
-# ignored by the checker.
+#   plan    list every tenant with its credentials_ref and ring Environment
+#   fetch   one job PER TENANT, in that tenant's Environment, with ONLY that
+#           tenant's secret: read installed packs (update_installed_state.py)
+#           and upload a one-tenant installed_state artifact
+#   report  merge the artifacts, compare RESOLVED (ring pins) vs installed, and
+#           open — or update — a single `drift` issue
+#
+# Reports only — drift never deletes (that's converge's orphan step).
+# Customer-prefixed content is ignored by the checker. A tenant whose fetch
+# fails is listed in the report as unreachable instead of aborting the run.
 # ============================================================================
 name: drift
 
 on:
   workflow_dispatch: {}
   # schedule:
-  #   - cron: "0 13 * * *"   # enable when installed-state is fetched live
+  #   - cron: "0 13 * * *"
 
 permissions:
   contents: read
-  issues: write
 
 jobs:
-  drift:
-    # Skip the entire job cleanly (stays green) if FLEET_LIVE is not 'true'
+  plan:
     if: vars.FLEET_LIVE == 'true'
     runs-on: ubuntu-latest
+    outputs:
+      tenants: ${{ steps.plan.outputs.tenants }}
     steps:
-      - uses: actions/checkout@v4
-      
-      - uses: actions/setup-python@v5
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5
         with: { python-version: "3.12" }
-        
-      - run: pip install pyyaml
+      - run: pip install -c requirements-ci.txt pyyaml
+      - id: plan
+        run: |
+          python - <<'PY' >> "$GITHUB_OUTPUT"
+          import json, yaml
+          from pathlib import Path
+          pol = (yaml.safe_load(open("fleet/policies.yml")) or {}).get("rings") or {}
+          out = []
+          for f in sorted(Path("fleet/tenants").glob("*.yml")):
+              t = yaml.safe_load(f.read_text()) or {}
+              out.append({"tenant": f.stem,
+                          "credentials_ref": t.get("credentials_ref") or f.stem.upper(),
+                          "environment": (pol.get(t.get("ring")) or {}).get("environment") or ""})
+          print(f"tenants={json.dumps(out)}")
+          PY
 
-      - name: Build installed-state
+  fetch:
+    needs: plan
+    if: needs.plan.outputs.tenants != '[]'
+    runs-on: ubuntu-latest
+    environment: ${{ matrix.t.environment }}
+    strategy:
+      fail-fast: false
+      matrix:
+        t: ${{ fromJson(needs.plan.outputs.tenants) }}
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5
+        with: { python-version: "3.12" }
+      - run: pip install -c requirements-ci.txt pyyaml
+      - name: Installed state for ${{ matrix.t.tenant }}
         env:
-          ALL_SECRETS: ${{ toJson(secrets) }}
+          TENANT: ${{ matrix.t.tenant }}
+          FLEET_TENANT_CREDS: ${{ secrets[format('{0}_CREDS', matrix.t.credentials_ref)] }}
+          FLEET_TENANT_BASE_URL: ${{ secrets[format('{0}_BASE_URL', matrix.t.credentials_ref)] }}
+          FLEET_TENANT_API_KEY: ${{ secrets[format('{0}_API_KEY', matrix.t.credentials_ref)] }}
+          FLEET_TENANT_AUTH_ID: ${{ secrets[format('{0}_AUTH_ID', matrix.t.credentials_ref)] }}
         run: |
           set -euo pipefail
+          eval "$(python scripts/load_creds.py "$TENANT")"
+          python scripts/update_installed_state.py -t "$TENANT"
+          mkdir -p state && mv installed_state.yml "state/$TENANT.yml"
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: state-${{ matrix.t.tenant }}
+          path: state/
+          retention-days: 7
 
-          # Iterate sequentially over all configured tenants
-          for f in fleet/tenants/*.yml; do
-            # Handle edge case where directory is empty
-            [ -e "$f" ] || continue
-            
-            TENANT=$(basename "$f" .yml)
-            echo "Fetching installed state for tenant: $TENANT"
-            
-            # Load credentials for this tenant into the environment
-            eval "$(python scripts/load_creds.py "$TENANT")"
-            
-            # Update the installed_state.yml file
-            python scripts/update_installed_state.py -t "$TENANT"
-          done
+  report:
+    needs: [plan, fetch]
+    if: always() && needs.plan.result == 'success'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      issues: write
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5
+        with: { python-version: "3.12" }
+      - run: pip install -c requirements-ci.txt pyyaml
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
+        with:
+          pattern: state-*
+          path: state
+          merge-multiple: true
+
+      - name: Merge installed state
+        env:
+          TENANTS: ${{ needs.plan.outputs.tenants }}
+        run: |
+          python - <<'PY'
+          import json, os, yaml
+          from pathlib import Path
+          merged = {}
+          for f in sorted(Path("state").glob("*.yml")) if Path("state").exists() else []:
+              merged.update(yaml.safe_load(f.read_text()) or {})
+          wanted = [t["tenant"] for t in json.loads(os.environ["TENANTS"])]
+          missing = [t for t in wanted if t not in merged]
+          Path("installed_state.yml").write_text(yaml.safe_dump(merged) if merged else "")
+          Path("unreachable.json").write_text(json.dumps(missing))
+          print(f"state for {len(merged)} tenant(s); unreachable: {missing or 'none'}")
+          PY
 
       - name: Check drift
         id: check
-        run: |          
-          # IF installed_state.yml doesn't exist or is empty (0 bytes), 
-          # THEN, skip the check to prevent massive false-positive "MISSING" drift reports.
+        run: |
           if [ ! -s installed_state.yml ]; then
-            echo "installed_state.yml is missing or empty. Skipping drift check."
+            echo "no installed state fetched — skipping drift check"
+            echo '{"reports": [], "total_drift": 0}' > drift.json
             echo "drift=0" >> "$GITHUB_OUTPUT"
             exit 0
           fi
-          
-          # Perform the drift check on installed_state.yml
           set +e
           python scripts/drift_check.py --state installed_state.yml --json > drift.json
           echo "drift=$?" >> "$GITHUB_OUTPUT"
           python scripts/drift_check.py --state installed_state.yml || true
 
-      # Report-only: open an issue when drift is found. The `drift` label must
-      # exist in the repo — try/catch will verify and abort creation with warning.
-      - name: Open issue on drift
-        if: steps.check.outputs.drift != '0'
-        uses: actions/github-script@v7
+      # One open `drift` issue at a time: updated in place, not duplicated.
+      - name: Open or update the drift issue
+        if: steps.check.outputs.drift != '0' || hashFiles('unreachable.json') != ''
+        uses: actions/github-script@f28e40c7f34bde8b3046d885e986cb6290c5673b # v7
         with:
           script: |
             const fs = require('fs');
             const data = JSON.parse(fs.readFileSync('drift.json', 'utf8'));
-            const labelName = 'drift';
-
-            /* Try block houses label check/creation
-            Failures do not produce error, only warning
-            Kept all nested throws within outter try/block
-            Does not try to create issue if label does not exist -
-            or fails at label creation */
+            const unreachable = JSON.parse(fs.readFileSync('unreachable.json', 'utf8'));
+            if (!data.total_drift && unreachable.length === 0) return;
+            const label = 'drift';
+            const { owner, repo } = context.repo;
             try {
-              let labelExists = false;
-              try {
-                await github.rest.issues.getLabel({
-                  owner: context.repo.owner,
-                  repo: context.repo.repo,
-                  name: labelName
-                });
-                labelExists = true;
-              } catch (error) {
-                if (error.status === 404) {
-                  labelExists = false;
-                } else {
-                  throw new Error(`Label GET failed. Status: ${error.status} - ${error.message}`);
-                }
+              try { await github.rest.issues.getLabel({ owner, repo, name: label }); }
+              catch (e) {
+                if (e.status !== 404) throw e;
+                await github.rest.issues.createLabel({ owner, repo, name: label,
+                  color: 'd73a4a', description: 'Tracks fleet drift detection' });
               }
-              // IF label doesn't exist, THEN TRY to create the label
-              if (!labelExists) {
-                try {
-                  await github.rest.issues.createLabel({
-                    owner: context.repo.owner,
-                    repo: context.repo.repo,
-                    name: labelName,
-                    color: 'd73a4a', 
-                    description: 'Tracks fleet drift detection'
-                  });
-                } catch (error) {
-                  throw new Error(`Label POST failed. Status: ${error.status} - ${error.message}`);
-                }
+              const lines = data.reports.flatMap(r => r.drift.map(d =>
+                `- **${r.tenant}** \`${d.pack}\`: installed ${d.installed ?? 'none'} ≠ resolved ${d.pinned}`));
+              const unr = unreachable.map(t => `- **${t}**: installed state could not be fetched`);
+              const body = [
+                `_Updated ${new Date().toISOString()} by [drift run](${context.serverUrl}/${owner}/${repo}/actions/runs/${context.runId})._`,
+                '', lines.length ? '### Drift' : '', ...lines,
+                '', unr.length ? '### Unreachable tenants' : '', ...unr,
+              ].join('\n');
+              const title = `Fleet drift detected (${data.total_drift} pack(s)` +
+                            (unr.length ? `, ${unr.length} unreachable)` : ')');
+              const open = await github.rest.issues.listForRepo({ owner, repo, labels: label, state: 'open' });
+              if (open.data.length) {
+                await github.rest.issues.update({ owner, repo, issue_number: open.data[0].number, title, body });
+              } else {
+                await github.rest.issues.create({ owner, repo, title, body, labels: [label] });
               }
-
-              // Create the Issue here
-              const lines = data.reports.flatMap(r =>
-                r.drift.map(d => `- **${r.tenant}** \`${d.pack}\`: installed ${d.installed ?? 'none'} ≠ resolved ${d.pinned}`));
-
-              await github.rest.issues.create({
-                owner: context.repo.owner,
-                repo: context.repo.repo,
-                title: `Fleet drift detected (${data.total_drift} pack(s))`,
-                body: lines.join('\n') + '\n\n_Filed by the drift workflow._',
-                labels: [labelName],
-              });
-
-            // Any problems found during label check/creation surface here.
-            } catch (mainError) {
-              // Output troubleshooting diagnostic information and exit cleanly to prevent a failed action
-              console.error("Diagnostic Info: Skipping issue creation due to API error.");
-              console.error(mainError);
-              
-              // core.warning (should) create a yellow annotation on the Action's summary page
-              core.warning(`Drift was detected, but the issue could not be created: ${mainError.message}`);
+            } catch (e) {
+              core.warning(`Drift found, but the issue could not be written: ${e.message}`);
             }
 
-      # Drift is a report, not a build failure — the job stays green so the
-      # Actions tab isn't perpetually red. It fails only on an unexpected error.
       - name: Summary
+        env:
+          DRIFT: ${{ steps.check.outputs.drift }}
         run: |
-          if [ "${{ steps.check.outputs.drift }}" != "0" ]; then
+          if [ "$DRIFT" != "0" ]; then
             echo "Drift found and reported via an issue (job intentionally green)."
           else
             echo "Fleet in sync."

@@ -235,6 +235,7 @@ def _mock_live_seams(monkeypatch, tenant, carries, installed=None, fails=()):
     monkeypatch.setattr(deploy_tenant, "load_creds", lambda: creds)
     monkeypatch.setattr(deploy_tenant, "assert_host_matches", lambda r, c: None)
     monkeypatch.setattr(deploy_tenant, "list_installed", lambda c: dict(installed or {}))
+    monkeypatch.setattr(deploy_tenant, "verify_installed", lambda c, e: {})
     monkeypatch.setattr(deploy_tenant, "load_catalog", lambda *a, **k: {"packs": []})
     monkeypatch.setattr(
         deploy_tenant, "resolve_artifact",

@@ -9,3 +9,7 @@ groups: []
 extras: []
 pin_overrides: {}
 custom: []
+
+# Optional: converge this tenant FIRST when its ring deploys; the rest of the
+# ring waits until every canary tenant converged successfully.
+# canary: true

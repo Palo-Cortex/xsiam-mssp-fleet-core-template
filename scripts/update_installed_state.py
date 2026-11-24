@@ -174,6 +174,7 @@ def main():
         print(f"FAILED: HTTP {e.code} {e.reason}")
 
         # Try Block - Attempt to make the error output readable, output original on failure.
+        error_body = ""
         try:
 
             # Define variable (str) of error by reading and decoding to utf-8
@@ -185,7 +186,9 @@ def main():
         except Exception:
 
             print(f"Raw HTML/Text Error Body:\n{error_body}") # output less readible on fail.
-            
+
+        sys.exit(1)  # a failed fetch must fail the job, not look like success
+
     # Except URLError and output reason
     except urllib.error.URLError as e:
 
@@ -193,6 +196,7 @@ def main():
             "NETWORK ERROR: Could not reach host. "
             f"Verify DEMISTO_BASE_URL used for credentials. ({e.reason})"
         )
+        sys.exit(1)
 
 if __name__ == "__main__":
     main()

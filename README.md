@@ -100,16 +100,19 @@ scripts/
 ├── deploy_tenant.py      # converge ONE tenant: fetch|local source → demisto-sdk upload → delete orphans
 ├── drift_check.py        # ▶ resolved vs installed, per tenant (offline via fixture)
 ├── namespace_lint.py     # ▶ fleet side of the namespace contract
-├── ring_gate.py          # ▶ path-aware promotion policy check (soak/no-skip/change-window/no-local)
+├── ring_gate.py          # ▶ path-aware promotion policy check (soak/no-skip/change-window/no-local/rollback); CI runs the base branch's copy
+├── plan_converge.py      # ▶ which tenants a converge run deploys (whole-push diff, window re-check, canary waves)
+├── lock.py               # ▶ artifact lock: pack@version → zip URL + sha256 (fleet/artifacts.lock.yml)
 ├── promote.py            # ▶ copy a pin forward into the next ring
 └── load_creds.py         # resolve ONE tenant's creds in CI (the only credential-store seam)
 tests/ · pytest.ini       # ▶ the pytest suite; ring-gate runs it on every PR
 .github/workflows/        # GitHub Actions
-├── converge.yml          # push to main (fleet/pins/**, Packs/**, or fleet/config_overlays/**) → release job → plan job → per-tenant matrix converge
-├── ring-gate.yml         # required PR check: pytest + resolve + namespace_lint + ring_gate + catalog sync + release check
+├── converge.yml          # push to main (fleet/pins/**, Packs/**, or fleet/config_overlays/**) → release → plan → canary wave → fleet wave
+├── converge-tenant.yml   # reusable: converge ONE tenant in its ring's Environment with only its own secret
+├── ring-gate.yml         # required PR + merge-queue check: pytest + resolve + namespace_lint + lock + ring_gate (from base) + catalog sync + release check
 ├── release.yml           # reusable (called first by converge; or manual) → tag <id>-v<ver> + GitHub Release with the pack zip
-├── promote.yml           # workflow_dispatch → pin-copy PR
-└── drift.yml             # workflow_dispatch drift report; opens a labeled issue
+├── promote.yml           # workflow_dispatch → pin-copy + lock PR (opened as a GitHub App so ring-gate runs)
+└── drift.yml             # workflow_dispatch drift report: per-tenant fetch jobs → one updated `drift` issue
 fixtures/ · docs/
 ```
 
@@ -186,10 +189,10 @@ flowchart LR
 
 1. **Author / bump** a version in `fleet/pins/dev.yml`; merging converges the dev ring. For an **MSSP-authored pack**: bump its `currentVersion` and regenerate the catalog (`mssp_catalog.py --write`) in the pack PR; the pin to the new version can go in the same PR — converge publishes the tagged release zip (`release.yml`) before it plans any tenant. (Fast path while iterating: pin it `local` and every merge to its `Packs/<id>/` source converges dev directly.)
 2. **Promote** with `promote.py` (or the `promote` workflow) → a PR copying the pin into `qa.yml`.
-3. The PR must pass **`ring-gate`**: the version must already be in the source ring (no-skip), have soaked ≥ the policy's `min_soak_days` (measured from git history; dev → qa soak exempts MSSP-authored packs — dev never runs them — while qa → prod soak applies to every pack), and — for prod — merge inside a change window. A `local` pin may **never** enter a gated ring: soak on the sentinel is meaningless while the `Packs/` source keeps changing, so MSSP packs promote as their released versions, exactly like upstream packs.
-4. **Merge** → `converge` deploys the target ring. Prod runs under the `fleet-prod` Environment (approval + prod-scoped secrets).
-5. **Removal**: delete a pin → convergence orphan-deletes that pack via the XSIAM pack-delete API, but only within the bounded deletable set (upstream catalog ∪ MSSP-authored ids). Marketplace and customer-prefixed packs are never touched.
-6. **Rollback**: revert a pin PR — uploading an older zip over a newer install just works.
+3. The PR must pass **`ring-gate`**: the version must already be in the source ring **on the base branch** (no-skip — one PR can't fill both rings), have soaked ≥ the policy's `min_soak_days` (measured from the base branch's first-parent history, i.e. from when the version *merged* into the source ring — never from a PR's own commit dates; dev → qa soak exempts MSSP-authored packs — dev never runs them — while qa → prod soak applies to every pack), and — for prod — merge inside a change window. A `local` pin may **never** enter a gated ring: soak on the sentinel is meaningless while the `Packs/` source keeps changing, so MSSP packs promote as their released versions, exactly like upstream packs.
+4. **Merge** → `converge` deploys the target ring: canary tenants (`canary: true`) first, then the rest, at most `max_parallel` at a time. Each tenant job runs in its ring's Environment (prod: `fleet-prod` — approval + prod-scoped secrets). A windowed ring merged outside its window is withheld and the run fails visibly.
+5. **Removal**: delete a pin → convergence orphan-deletes that pack via the XSIAM pack-delete API, but only ids this fleet has managed (MSSP-authored, or ever pinned in `fleet/pins/`). Customer-prefixed ids, a tenant's `custom:` ids and `defaults.yml › never_delete` are never touched.
+6. **Rollback**: revert the pin PR and add the **`rollback`** label. ring-gate lets a ring return to a version it already ran, waiving no-skip, soak and the change window (review + Environment approval still apply), and converge deploys a rollback-only push outside the window. Uploading an older zip over a newer install just works.
 7. **Drift**: the drift job reports installed ≠ resolved; it never deletes.
 
 ---
@@ -200,8 +203,10 @@ No secrets live in manifests — only a `credentials_ref` per tenant. In CI,
 `scripts/load_creds.py` resolves that ref to the tenant's trio via the backend in
 `defaults.yml`; the preferred store is one packed secret per tenant,
 `<REF>_CREDS` = `{"base_url","api_key","auth_id"}` (the flat
-`<REF>_BASE_URL/_API_KEY/_AUTH_ID` trio still works). Prod secrets are scoped to
-the `fleet-prod` Environment (on GitHub) so nonprod jobs cannot read them. That
+`<REF>_BASE_URL/_API_KEY/_AUTH_ID` trio still works). **Each tenant job maps only
+its own secret** (`secrets[<REF>_CREDS]` → `FLEET_TENANT_CREDS`) and runs in its
+ring's Environment from `policies.yml`, so prod secrets scoped to `fleet-prod`
+are unreadable from nonprod jobs and no job ever holds another tenant's key. That
 one seam is also where an external secrets manager (Vault, AWS/GCP SM) plugs in
 at fleet scale — the workflow and `deploy_tenant.py` never change.
 
@@ -227,22 +232,27 @@ a URL on that same host. Upstream SOC Framework zips still come from github.com
 as public downloads, so Enterprise Server runners need outbound access to it.
 Also remove `queue: max` from `converge.yml` if your server doesn't support it.
 
-**Converge releases first, then fans out per tenant.** A push to main touching
-`fleet/pins/**`, `Packs/**`, or `fleet/config_overlays/**` first runs the
-release job (`release.yml`, publishing any MSSP pack version not yet released),
-then a `plan` job that computes the
-affected tenants (changed rings, plus any ring or tenant pinning a changed
-`Packs/` pack to `local`, plus the tenants a changed Config Overlay layer
-composes into) and emits them as a matrix — one isolated job per tenant,
-`fail-fast: false`, so one tenant failing never blocks the rest:
+**Converge releases first, then fans out per tenant in waves.** A push to main
+touching `fleet/pins/**`, `Packs/**`, or `fleet/config_overlays/**` first runs
+the release job (`release.yml`, publishing any MSSP pack version not yet
+released), then `plan` (`scripts/plan_converge.py`) computes the affected
+tenants over the **whole push** (changed rings, plus any ring or tenant pinning
+a changed `Packs/` pack to `local`, plus the tenants a changed Config Overlay
+layer composes into), re-checks change windows, and splits them into a canary
+wave and a fleet wave — one isolated job per tenant, `fail-fast: false`:
 
 ```mermaid
 flowchart LR
-    push["push to main<br/>fleet/pins/** · Packs/** · fleet/config_overlays/**"] --> rel["release job:<br/>publish unreleased MSSP packs"] --> plan["plan job:<br/>affected tenants → JSON"]
-    plan --> t1["converge tenant A"]
-    plan --> t2["converge tenant B"]
-    plan --> t3["… one job per tenant<br/>(fail-fast: false)"]
+    push["push to main<br/>fleet/pins/** · Packs/** · fleet/config_overlays/**"] --> rel["release job:<br/>publish unreleased MSSP packs"] --> plan["plan job:<br/>affected tenants, window re-check"]
+    plan --> c["canary wave<br/>(canary: true tenants)"]
+    c -->|all succeeded| f["fleet wave<br/>(max_parallel per ring)"]
+    plan --> b["blocked job<br/>(fails if a ring is outside its window)"]
 ```
+
+Every tenant job converges via `deploy_tenant.py`: upload each pack (a pack
+locked in `fleet/artifacts.lock.yml` is fetched from its locked URL and its
+sha256 checked first), then **read the installed versions back** — a mismatch is
+a failure — and only then orphan-delete.
 
 Converge runs for `main` are **queued, one at a time, in order** (a
 concurrency group with `queue: max`, which holds up to 100 waiting runs instead
@@ -258,9 +268,14 @@ until it is fixed. ring-gate doesn't build zips, so this shows up after merge.
 push (no secrets, no tenant writes) until you set the repo variable
 `FLEET_LIVE=true`; only then does it `--apply`. `drift` is `workflow_dispatch`
 only (its installed-state is still a fixture) and reports via an issue without
-failing the run. `ring-gate` runs on PRs (including the pytest suite). When
-going live on GitHub, add the `fleet-prod` Environment approval gate to the
-converge job's prod ring.
+failing the run. `ring-gate` runs on PRs and in the merge queue (including the
+pytest suite). Before going live, add required reviewers to the `fleet-prod`
+Environment — converge already runs prod tenants in it.
+
+**Supply chain.** Tenant jobs hold an XSIAM API key, so everything they run is
+pinned: actions by commit SHA, Python packages by exact version
+(`requirements-ci.txt`, used as a pip constraints file). Dependabot proposes
+bumps as ordinary, gated PRs.
 
 ---
 

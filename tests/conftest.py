@@ -27,6 +27,16 @@ _DEFAULTS = {
 
 
 @pytest.fixture(autouse=True)
+def _fixture_packs(monkeypatch):
+    """MSSP-authored packs come from tests/fixtures/Packs, never the repo's own
+    Packs/ — a real fleet replaces the example pack, and the suite (run by
+    ring-gate on every PR) must not depend on it. Tests about the REAL repo
+    (e.g. the committed-catalog sync check) re-point PACKS_DIR themselves."""
+    import resolve
+    monkeypatch.setattr(resolve, "PACKS_DIR", HERE / "fixtures" / "Packs")
+
+
+@pytest.fixture(autouse=True)
 def _github_com_by_default(monkeypatch):
     """Tests assume github.com unless they set these themselves, so the suite
     gives the same results on a GitHub Enterprise Server runner."""

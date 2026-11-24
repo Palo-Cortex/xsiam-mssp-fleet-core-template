@@ -36,9 +36,11 @@ def test_expected_catalog_derives_examplepack_entry():
     assert e["zip_url"].endswith(f"/{tag}/{tag}.zip")
 
 
-def test_committed_catalog_in_sync_with_packs_metadata():
+def test_committed_catalog_in_sync_with_packs_metadata(monkeypatch):
     """The repo invariant ring-gate enforces: the committed catalog always
-    matches what Packs/ metadata derives."""
+    matches what Packs/ metadata derives (the REAL Packs/, not the fixture)."""
+    import resolve
+    monkeypatch.setattr(resolve, "PACKS_DIR", resolve.REPO / "Packs")
     assert mssp_catalog.current_catalog() == mssp_catalog.expected_catalog()
 
 

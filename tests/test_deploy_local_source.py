@@ -222,7 +222,8 @@ def test_sdk_upload_source_builds_correct_demisto_sdk_command(monkeypatch):
 
 
 def test_sdk_upload_source_runs_from_repo_root(monkeypatch):
-    """The source upload runs from the repo root (cwd == REPO)."""
+    """The source upload runs from the directory that holds Packs/ — the repo
+    root in a real fleet (resolve.PACKS_DIR = REPO / "Packs")."""
     captured = {}
 
     def _fake_run(cmd, *args, **kwargs):
@@ -241,7 +242,9 @@ def test_sdk_upload_source_runs_from_repo_root(monkeypatch):
     }
     deploy_tenant.sdk_upload_source(LOCAL_PACK_ID, creds)
 
-    assert str(captured["cwd"]) == str(deploy_tenant.REPO), (
+    import resolve
+    assert resolve.REPO / "Packs" == deploy_tenant.REPO / "Packs"
+    assert str(captured["cwd"]) == str(resolve.PACKS_DIR.parent), (
         f"source upload must run from repo root, got cwd={captured['cwd']!r}"
     )
 

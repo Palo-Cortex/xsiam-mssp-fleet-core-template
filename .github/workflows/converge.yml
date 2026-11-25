@@ -55,7 +55,7 @@ on:
         required: true
         default: dev
         type: choice
-        options: [dev, qa, prod, mssp]
+        options: [dev, qa, prod]
       break_glass:
         description: "Deploy a change-windowed ring OUTSIDE its window (emergency only)"
         required: false

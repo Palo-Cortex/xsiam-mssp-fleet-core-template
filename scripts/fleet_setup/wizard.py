@@ -119,7 +119,7 @@ class Wizard:
         return config.TOPOLOGIES[self.a["topology"]] if self.a.get("topology") else config.chain(self.repo)
 
     def all_rings(self):
-        return self.rings() + ([config.MSSP_RING] if self.a.get("mssp_ring") else [])
+        return self.rings()
 
     def bootstrap(self):
         """True until the config has been published with protections on: pins
@@ -259,9 +259,14 @@ approvals). The wizard can create one from this template now.
                 "org.reconfigure", "Your promotion path is already set. Change it?", False):
             return
         ui.explain("""
-A "ring" is a stage your content passes through, each with its own XSIAM
-tenant(s). A pack version is always deployed to the first ring, then PROMOTED
-ring by ring with a pull request — never straight to production.
+A "ring" is a stage your content passes through (e.g. dev, qa, prod). A pack
+version is always deployed to the first ring, then PROMOTED ring by ring with a
+pull request — never straight to production.
+
+A ring can hold ANY NUMBER of XSIAM tenants. prod usually holds every
+production tenant you manage (yours and/or your customers'); they all receive a
+version when it's promoted to prod. Only operational (child) tenants are
+managed — an XSIAM parent/console tenant can't run content.
 """)
         a["mssp"] = ui.confirm("org.mssp", "Do you manage XSIAM tenants on behalf of other "
                                "organisations (are you an MSSP)?", a.get("mssp", False))
@@ -278,13 +283,12 @@ ring by ring with a pull request — never straight to production.
         rings = self.rings()
         existing_t = config.tenants(self.repo)
         stranded = [t for t, p in existing_t.items() if t not in config.EXAMPLE_TENANTS
-                    and p.get("ring") not in rings + [config.MSSP_RING]]
+                    and p.get("ring") not in rings]
         if stranded:
             raise Abort(f"tenant(s) {', '.join(stranded)} are in rings this path doesn't have — "
-                        f"move or delete them first")
-        a["mssp_ring"] = bool(a["mssp"]) and ui.confirm(
-            "org.mssp_ring", "Also manage your own MSSP parent tenant on a separate track "
-            "(outside the customer promotion path)?", a.get("mssp_ring", False))
+                        f"move them to one of {', '.join(rings)} (edit `ring:` in "
+                        f"fleet/tenants/<name>.yml) or delete them first")
+        a.pop("mssp_ring", None)        # older wizard versions offered a parent-tenant ring
 
         ui.explain("""
 SOAK = how many days a version must have run in the previous ring before it
@@ -341,11 +345,11 @@ prefix per tenant in step 4.
         lock_now = {r_: bool((config.policies(self.repo).get("rings") or {}).get(r_, {}).get("require_lock"))
                     for r_ in rings}
         (self.repo / "fleet" / "policies.yml").write_text(config.render_policies(
-            rings, soak, a["change_window"], require_lock=lock_now, mssp_ring=a["mssp_ring"]))
-        gone = config.set_rings(self.repo, rings, a["mssp_ring"])
+            rings, soak, a["change_window"], require_lock=lock_now))
+        gone = config.set_rings(self.repo, rings)
         for g in gone:
             ui.info(f"removed ring {g} (fleet/pins/{g}.yml)")
-        config.update_workflow_choices(self.repo, rings, a["mssp_ring"])
+        config.update_workflow_choices(self.repo, rings)
         server = self.gh.server_url() if hasattr(self.gh, "server_url") else "https://github.com"
         # prefixes come only from real tenants (drops the template's example `acme-`)
         ns = sorted({p.get("customer_namespace") for p in config.tenants(self.repo).values()
@@ -403,7 +407,7 @@ Framework catalog and are pinned to an exact version (never "latest").
             pins = {p: v for p, v in config.pins(self.repo, ring).items()
                     if p not in base and p in used}
             pins.update({p: cat[p] for p in base})
-            src = None if ring == config.MSSP_RING or i == 0 else rings[i - 1]
+            src = None if i == 0 else rings[i - 1]
             config.write_pins(self.repo, ring, src, pins)
         ui.ok(f"{len(base)} base pack(s) pinned in {', '.join(rings)}")
 
@@ -411,9 +415,13 @@ Framework catalog and are pinned to an exact version (never "latest").
     def step_tenants(self):
         ui = self.ui
         ui.explain("""
-For each XSIAM tenant you need an API key. The wizard checks the key against
-the tenant right away and stores it as an encrypted GitHub secret, scoped to
-that ring's Environment — it is never written to the repository.
+Add at least one tenant per ring — then as many more as you manage: typically
+every additional production tenant (yours or your customers') goes in prod.
+You can always add more later with: python scripts/setup_wizard.py add-tenant
+
+For each tenant you need an API key. The wizard checks the key against the
+tenant right away and stores it as an encrypted GitHub secret, scoped to that
+ring's Environment — it is never written to the repository.
 """)
         ui.say(xsiam.HOW_TO_CREATE_KEY)
         planned = self.ui.lookup("tenants") if ui.unattended else None
@@ -431,14 +439,33 @@ that ring's Environment — it is never written to the repository.
                         f"{t} ({p.get('ring')})" for t, p in existing.items()))
                 if missing:
                     ui.info("rings still without a tenant: " + ", ".join(missing))
-                prompt = "Add a tenant?" if not existing else "Add another tenant?"
+                prompt = ("Add a tenant?" if not existing else
+                          "Add another tenant?" if missing else
+                          "Add another tenant (e.g. more production tenants)?")
                 if not ui.confirm(f"tenants.more.{i}", prompt, bool(missing)):
-                    if missing:
-                        ui.warn("every ring needs at least one tenant before you can publish — "
-                                "add them later with: python scripts/setup_wizard.py add-tenant")
-                    break
+                    if not missing:
+                        break
+                    nxt = self._resolve_empty_rings(missing, i)
+                    if nxt is None:
+                        break
+                    missing = [nxt]
             self.add_tenant(f"tenants.{i}", default_ring=(missing or self.all_rings())[0])
             i += 1
+
+    def _resolve_empty_rings(self, missing, i):
+        """The user wants to stop but some rings have no tenant. Returns the
+        ring to add a tenant to next, or None to stop."""
+        ui = self.ui
+        ui.warn(f"every ring needs at least one tenant — still empty: {', '.join(missing)}")
+        for ring in missing:
+            options = [("add", f"Add a tenant to {ring} now")]
+            options.append(("later", "Stop for now (checks fail until it has one; "
+                                     "use: python scripts/setup_wizard.py add-tenant)"))
+            choice = ui.choose(f"tenants.empty.{i}.{ring}", f"Ring '{ring}' has no tenant:", options, "add")
+            if choice == "add":
+                return ring
+            return None
+        return None
 
     def add_tenant(self, key, default_ring=None):
         ui = self.ui
@@ -475,7 +502,7 @@ that ring's Environment — it is never written to the repository.
                       validate=lambda v: config.tenant_name_error(v, existing))
         display = ui.ask(f"{key}.display_name", "Display name", name)
         ring = ui.choose(f"{key}.ring", "Which ring is this tenant in?",
-                         [(r_, r_) for r_ in rings], default_ring or rings[0])
+                         [(r_, _ring_label(r_, rings)) for r_ in rings], default_ring or rings[0])
         t = {"name": name, "display_name": display, "ring": ring,
              "credentials_ref": config.credentials_ref(name), "extras": []}
         label = xsiam.tenant_label(url).lower()
@@ -483,9 +510,13 @@ that ring's Environment — it is never written to the repository.
             t["host_token"] = re.sub(r"[^a-z0-9-]", "", label)
             ui.info(f"host guard will expect '{t['host_token']}' in the API host "
                     f"(blocks deploying with another tenant's key)")
-        if ring == self.rings()[-1] and ui.confirm(
-                f"{key}.canary", f"Deploy to this tenant FIRST when {ring} changes (canary)?", False):
-            t["canary"] = True
+        if ring == self.rings()[-1]:
+            ui.explain(f"""
+CANARY: when {ring} changes, canary tenants are deployed first and every other
+{ring} tenant waits until they succeed. Pick one or two low-risk tenants.
+""")
+            if ui.confirm(f"{key}.canary", f"Make {name} a canary?", False):
+                t["canary"] = True
         if self.a.get("self_publish") and ui.confirm(
                 f"{key}.self_publish", "Does this tenant's owner publish their own content?", False):
             prefix = ui.ask(f"{key}.prefix", "Their content name prefix", f"{name}-",
@@ -532,7 +563,7 @@ that ring's Environment — it is never written to the repository.
         for ring in upto:
             pins = config.pins(self.repo, ring)
             pins.update({p: cat[p] for p in extras if p not in pins})
-            src = None if ring == config.MSSP_RING or ring == rings[0] else rings[rings.index(ring) - 1]
+            src = None if ring == rings[0] else rings[rings.index(ring) - 1]
             config.write_pins(self.repo, ring, src, pins)
 
     # --- 5 owners ------------------------------------------------------------
@@ -589,22 +620,53 @@ without it you re-trigger ring-gate on promote PRs by hand.
         ui.explain(f"""
   1. Open (pre-filled):  {url}
   2. Click "Create GitHub App". Note the App ID shown at the top.
-  3. Under "Private keys", click "Generate a private key" (a .pem downloads).
+  3. Under "Private keys", click "Generate a private key". A file named like
+     {name}.<date>.private-key.pem downloads (usually to ~/Downloads).
   4. Left menu → "Install App" → install it on ONLY {self.gh.repo}.
 """)
         app_id = ui.ask("app.id", "App ID", validate=lambda v: None if v.isdigit() else "a number")
-        pem = ui.ask("app.private_key_path", "Path to the downloaded .pem file",
-                     validate=_pem_file)
+        pem = self._ask_pem(name)
         self.gh.set_variable("FLEET_APP_ID", app_id)
-        self.gh.set_secret("FLEET_APP_PRIVATE_KEY", Path(os.path.expanduser(pem)).read_text())
+        self.gh.set_secret("FLEET_APP_PRIVATE_KEY", pem.read_text())
         ui.ok("stored FLEET_APP_ID and FLEET_APP_PRIVATE_KEY")
         ui.info(f"you can now delete {pem}")
         self.a["app"] = "configured"
 
+    def _ask_pem(self, app_name):
+        """The App's private-key file. Accepts the file itself or the folder it
+        was downloaded to (the newest matching .pem there is offered)."""
+        ui = self.ui
+        dflt = _find_pem(Path.home() / "Downloads", app_name)
+        while True:
+            raw = ui.ask("app.private_key_path",
+                         "Full path AND file name of the downloaded .pem "
+                         "(or just the folder it's in)",
+                         str(dflt) if dflt else None, validate=lambda v: None if v else "required")
+            p = Path(os.path.expanduser(raw.strip().strip("'\"")))
+            if p.is_dir():
+                found = _pem_candidates(p, app_name)
+                if not found:
+                    ui.fail(f"no .pem file in {p}")
+                    if ui.unattended:
+                        raise AnswerError(f"app.private_key_path: no .pem file in {p}")
+                    continue
+                if len(found) == 1:
+                    p = found[0]
+                    ui.info(f"found {p.name}")
+                else:
+                    p = ui.choose("app.private_key_choice", f"Several .pem files in {raw}:",
+                                  [(f, f.name) for f in found], found[0])
+            err = _pem_file(str(p))
+            if not err:
+                return p
+            ui.fail(err)
+            if ui.unattended:
+                raise AnswerError(f"app.private_key_path: {err}")
+
     # --- 6 verify ------------------------------------------------------------
     def step_verify(self):
         ui = self.ui
-        problems = 0
+        problems = []        # (what, how to fix)
         code, msg = self.script("mssp_catalog.py", "--write")
         on_disk = {f.stem for f in (self.repo / "fleet" / "pins").glob("*.yml")}
         rings = [r_ for r_ in self.all_rings() if r_ in on_disk] + sorted(on_disk - set(self.all_rings()))
@@ -612,13 +674,23 @@ without it you re-trigger ring-gate on promote PRs by hand.
         checks += [("namespace contract", ["namespace_lint.py"]),
                    ("Config Overlays", ["config_overlay_lint.py"]),
                    ("MSSP pack catalog", ["mssp_catalog.py", "--check"])]
+        tenants = config.tenants(self.repo)
         for title, args in checks:
             code, msg = self.script(*args)
             if code == 0:
                 ui.ok(title)
+                continue
+            ui.fail(f"{title}:\n      " + "\n      ".join(msg.splitlines()[-4:]))
+            ring = args[2] if args[0] == "resolve.py" else None
+            if ring and not any(p.get("ring") == ring for p in tenants.values()):
+                fix = "add a tenant to it:  python scripts/setup_wizard.py add-tenant"
+                problems.append((f"ring '{ring}' has no tenant", fix))
+            elif ring:
+                problems.append((f"ring '{ring}' doesn't resolve: {msg.splitlines()[-1]}",
+                                 f"pin the missing pack(s) in fleet/pins/{ring}.yml"))
             else:
-                problems += 1
-                ui.fail(f"{title}:\n      " + "\n      ".join(msg.splitlines()[-4:]))
+                problems.append((f"{title}: {msg.splitlines()[-1] if msg else 'failed'}",
+                                 "see the message above"))
 
         last = self.rings()[-1]
         ui.explain(f"""
@@ -637,8 +709,9 @@ ever installs the exact bytes you tested. Strongly recommended.
                         + "\n      ".join(msg.splitlines()[-4:]))
         code, msg = self.script("lock.py", "--check")
         if code:
-            problems += 1
             ui.fail("artifact lock:\n      " + "\n      ".join(msg.splitlines()[-4:]))
+            problems.append(("some pins in a require_lock ring aren't locked",
+                             "python scripts/lock.py --write   (then re-run the wizard)"))
 
         for t in sorted(config.tenants(self.repo)):
             code, msg = self.script("deploy_tenant.py", t, *([] if self.network else ["--offline"]))
@@ -647,8 +720,9 @@ ever installs the exact bytes you tested. Strongly recommended.
                 [ln for ln in msg.splitlines() if "!!" in ln or "ERROR" in ln or ln.startswith("#    ")][:5])
                 if bad else ""))
         if problems:
-            raise Abort(f"{problems} problem(s) above must be fixed before publishing. "
-                        f"Fix them (or re-run the step that sets them), then re-run the wizard.")
+            lines = "\n".join(f"  ✗ {what}\n     → {fix}" for what, fix in problems)
+            raise Abort(f"{len(problems)} problem(s) must be fixed before publishing:\n{lines}\n"
+                        f"Then re-run: python scripts/setup_wizard.py")
 
     def _set_require_lock(self, ring, value):
         p = self.repo / "fleet" / "policies.yml"
@@ -844,6 +918,14 @@ on a lab tenant.
         return healthy
 
 
+def _ring_label(ring, rings):
+    if ring == rings[-1]:
+        return f"{ring}  — production (all your production tenants go here)"
+    if ring == rings[0]:
+        return f"{ring}  — first stage (new versions land here first)"
+    return f"{ring}  — validation before {rings[-1]}"
+
+
 # --- validators --------------------------------------------------------------
 def _int_range(lo, hi):
     def v(x):
@@ -860,8 +942,25 @@ def _days(x):
     return None if parts and all(p in DAYS for p in parts) else "e.g. Tue,Wed,Thu"
 
 
+def _pem_candidates(folder, app_name=""):
+    """.pem files in `folder`, the App's own key first, then newest first."""
+    try:
+        pems = [f for f in Path(folder).glob("*.pem") if f.is_file()]
+    except OSError:
+        return []
+    return sorted(pems, key=lambda f: (not f.name.startswith(app_name), -f.stat().st_mtime))
+
+
+def _find_pem(folder, app_name):
+    """The App's downloaded key in `folder`, if exactly recognisable."""
+    own = [f for f in _pem_candidates(folder, app_name) if app_name and f.name.startswith(app_name)]
+    return own[0] if own else None
+
+
 def _pem_file(x):
     p = Path(os.path.expanduser(x))
+    if p.is_dir():
+        return f"{p} is a folder — give the .pem file inside it"
     if not p.is_file():
         return f"no file at {p}"
     return None if "PRIVATE KEY" in p.read_text(errors="replace")[:200] else "that isn't a .pem private key"

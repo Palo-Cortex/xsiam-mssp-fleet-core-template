@@ -12,8 +12,8 @@
 > changing one piece by hand. `python scripts/setup_wizard.py doctor` checks a
 > hand-made setup the same way.
 
-This repo is a working fleet with **example everything**: four example tenants
-(`devlab01`, `qacanary01`, `prodcustomer01`, `msspparent`), three example
+This repo is a working fleet with **example everything**: three example tenants
+(`devlab01`, `qacanary01`, `prodcustomer01`), three example
 groups, per-ring pins, and one example MSSP-authored pack. It runs green
 offline with zero setup — adoption is replacing the examples with your fleet,
 then flipping CI live.
@@ -66,7 +66,7 @@ and its tenants together, and remove it from `promotion_order` in
 ```yaml
 tenant: acmecorp01            # must appear in the tenant's XSIAM hostname —
 display_name: Acme Corp       #   the host guard refuses to deploy otherwise
-ring: prod                    # dev | qa | prod | mssp
+ring: prod                    # dev | qa | prod
 credentials_ref: ACMECORP01   # env-var prefix for its CI secret
 groups: []                    # subscribe to fleet/groups/*.yml bundles
 extras: []                    # or list vendor pack ids directly
@@ -110,7 +110,7 @@ packed form:
 (The flat trio `<REF>_BASE_URL` / `<REF>_API_KEY` / `<REF>_AUTH_ID` also
 works.) Each tenant's converge and drift job runs in its ring's GitHub
 Environment (`fleet/policies.yml › rings.<ring>.environment`: `fleet-nonprod`,
-`fleet-prod`, `fleet-mssp`) and maps only that tenant's secret. Store prod
+`fleet-prod`) and maps only that tenant's secret. Store prod
 tenants' secrets **in the `fleet-prod` Environment** so nonprod jobs cannot
 read them.
 

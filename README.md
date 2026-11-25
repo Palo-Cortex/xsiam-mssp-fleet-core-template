@@ -92,8 +92,7 @@ fleet/
 ├── pins/
 │   ├── dev.yml           # exact versions for the dev ring   (head of the chain)
 │   ├── qa.yml            # exact versions for the qa ring     (fed by promotion from dev)
-│   ├── prod.yml          # exact versions for the prod ring   (fed by promotion from qa)
-│   └── mssp.yml          # the MSSP parent tenant's own ring (outside the customer chain)
+│   └── prod.yml          # exact versions for the prod ring   (fed by promotion from qa)
 ├── groups/               # reusable bundles of EXTRA pack IDs (no versions)
 ├── tenants/              # one profile per tenant: ring, groups, extras, pin_overrides, customer_namespace
 └── config_overlays/      # fleet-owned Config Overlays: defaults.yml ⊕ <tenant>.yml sparse List patches

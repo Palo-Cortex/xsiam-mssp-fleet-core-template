@@ -72,7 +72,7 @@ KEY_ORDER = (
 )
 
 # Define variable (dict) of ring name to Textual color for the list
-RING_COLORS = {"dev": "green", "qa": "yellow", "prod": "red", "mssp": "magenta"}
+RING_COLORS = {"dev": "green", "qa": "yellow", "prod": "red"}
 
 # Define variable (str) placeholder shown when a tenant has no namespace
 NO_NAMESPACE = "(none)"

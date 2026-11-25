@@ -117,8 +117,8 @@ python scripts/promote.py --pack MsspAlertTriage --to prod
 | `fleet/pins/prod.yml` | gains `MsspAlertTriage: 1.0.0` |
 | `fleet/tenants/prodcustomer01.yml` (etc.) | add to `extras:` — or promote the composition to a group / `defaults.yml › base` if it is going fleet-wide |
 
-Going into `base` means *every* tenant composes it — including the
-mssp-ring parent — so `fleet/pins/mssp.yml` needs the pin in the same PR.
+Going into `base` means *every* tenant composes it, so every ring's pin file
+needs the pin — dev and qa already carry it from the earlier promotions.
 
 - **PR gate:** no-skip ✓ (in `qa.yml`); qa soak satisfied (≥ prod
   `min_soak_days`); the merge must land inside a prod change window; plus the

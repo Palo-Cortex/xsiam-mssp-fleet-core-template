@@ -25,8 +25,9 @@ TOPOLOGY_LABELS = {
     "qa-prod": "QA → Prod         (validate in qa, release to prod)",
     "dev-prod": "Dev → Prod        (build/validate in dev, release to prod)",
 }
-MSSP_RING = "mssp"
-ENV_NONPROD, ENV_PROD, ENV_MSSP = "fleet-nonprod", "fleet-prod", "fleet-mssp"
+ENV_NONPROD, ENV_PROD = "fleet-nonprod", "fleet-prod"
+# msspparent: shipped by older template versions (an XSIAM parent tenant can't
+# run content, so the fleet no longer models one) — still cleaned up if present.
 EXAMPLE_TENANTS = ["devlab01", "qacanary01", "prodcustomer01", "msspparent"]
 EXAMPLE_GROUPS = ["email-security", "financial-endpoint-heavy", "network-detection"]
 EXAMPLE_PACK = "ExamplePack"
@@ -62,8 +63,6 @@ def credentials_ref(name):
 
 
 def environment_for(ring, rings):
-    if ring == MSSP_RING:
-        return ENV_MSSP
     return ENV_PROD if ring == rings[-1] else ENV_NONPROD
 
 
@@ -96,7 +95,7 @@ def defaults(repo):
 
 # --- policies.yml ------------------------------------------------------------
 def render_policies(rings, soak, change_window=None, require_lock=None,
-                    max_parallel=None, mssp_ring=False):
+                    max_parallel=None):
     """policies.yml text for a promotion chain `rings` (head first)."""
     require_lock = require_lock or {}
     max_parallel = max_parallel or {}
@@ -124,15 +123,6 @@ def render_policies(rings, soak, change_window=None, require_lock=None,
         "",
         "rings:",
     ]
-    if mssp_ring:
-        out += [
-            f"  {MSSP_RING}:",
-            "    source: null            # the MSSP's own parent tenant — outside the customer chain",
-            "    min_soak_days: 0",
-            "    require_dry_run: false",
-            f"    environment: {ENV_MSSP}",
-            "",
-        ]
     for i, ring in enumerate(rings):
         source = rings[i - 1] if i else None
         last = i == len(rings) - 1
@@ -187,10 +177,10 @@ def write_pins(repo, ring, source, pinmap):
     p.write_text(render_pins(ring, source, dict(pinmap)))
 
 
-def set_rings(repo, rings, mssp_ring=False):
+def set_rings(repo, rings):
     """Make fleet/pins/ hold exactly one file per ring; returns removed rings."""
     pin_dir = Path(repo) / "fleet" / "pins"
-    keep = set(rings) | ({MSSP_RING} if mssp_ring else set())
+    keep = set(rings)
     removed = []
     for f in sorted(pin_dir.glob("*.yml")):
         if f.stem not in keep:
@@ -199,8 +189,6 @@ def set_rings(repo, rings, mssp_ring=False):
     for i, ring in enumerate(rings):
         if not (pin_dir / f"{ring}.yml").exists():
             write_pins(repo, ring, rings[i - 1] if i else None, {})
-    if mssp_ring and not (pin_dir / f"{MSSP_RING}.yml").exists():
-        write_pins(repo, MSSP_RING, None, {})
     return removed
 
 
@@ -220,11 +208,10 @@ def _set_options(text, input_name, values, default):
     return text[:m.start(1)] + new + text[m.end(1):]
 
 
-def update_workflow_choices(repo, rings, mssp_ring=False):
+def update_workflow_choices(repo, rings):
     wf = Path(repo) / ".github" / "workflows"
-    all_rings = list(rings) + ([MSSP_RING] if mssp_ring else [])
     conv = wf / "converge.yml"
-    conv.write_text(_set_options(conv.read_text(), "ring", all_rings, rings[0]))
+    conv.write_text(_set_options(conv.read_text(), "ring", list(rings), rings[0]))
     prom = wf / "promote.yml"
     prom.write_text(_set_options(prom.read_text(), "to_ring", rings[1:], rings[1]))
 

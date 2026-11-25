@@ -19,7 +19,8 @@
 #   * CHANGE WINDOW re-check: a ring with require_change_window is dropped
 #     outside its window (the `blocked` job then fails the run so it's visible)
 #     unless the push only rolls the ring back to versions it already ran, or a
-#     dispatch sets break_glass. ring-gate checks the window when the PR is
+#     dispatch sets break_glass. While FLEET_LIVE is off every run is a dry-run,
+#     so nothing is withheld — the window is shown as a notice instead. ring-gate checks the window when the PR is
 #     tested; this catches PRs merged later than that.
 #
 # ROLLOUT: tenants with `canary: true` converge first (`canary` job); the rest
@@ -99,9 +100,12 @@ jobs:
           AFTER: ${{ github.sha }}
           DISPATCH_RING: ${{ inputs.ring }}
           BREAK_GLASS: ${{ inputs.break_glass }}
+          FLEET_LIVE: ${{ vars.FLEET_LIVE }}
         run: |
           set -euo pipefail
           args=(--event "$EVENT" --after "$AFTER")
+          # A dry-run deploys nothing, so change windows don't withhold it.
+          [ "${FLEET_LIVE:-}" = "true" ] || args+=(--dry-run)
           if [ "$EVENT" = "workflow_dispatch" ]; then
             args+=(--ring "$DISPATCH_RING")
             [ "$BREAK_GLASS" = "true" ] && args+=(--break-glass) \
@@ -117,6 +121,11 @@ jobs:
           for k in ("canary", "fleet", "blocked"):
               print(f"{k}={json.dumps(p[k])}")
           print(f"max_parallel={p['max_parallel']}")
+          PY
+          python - <<'PY'
+          import json
+          for n in json.load(open("plan.json")).get("notes", []):
+              print(f"::notice::{n}")
           PY
 
   canary:

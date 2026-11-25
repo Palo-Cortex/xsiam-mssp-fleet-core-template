@@ -151,3 +151,27 @@ def test_zero_before_sha_falls_back_to_parent(fleet_repo):
     p = plan_converge.plan("push", before="0" * 40, after=after, now=IN_WINDOW)
 
     assert _names(p["fleet"]) == ["devlab"]
+
+
+def test_dry_run_plans_windowed_ring_with_a_note(fleet_repo):
+    """FLEET_LIVE off: nothing deploys, so the window must not withhold (and
+    paint the run red) — it becomes a note, and prod gets its dry-run plan."""
+    before = fleet_repo.first
+    fleet_repo.write("fleet/pins/prod.yml", {"ring": "prod", "pins": {"X": "2.0.0"}})
+    after = fleet_repo.commit("prod bump")
+
+    p = plan_converge.plan("push", before=before, after=after, now=OUT_OF_WINDOW, dry_run=True)
+
+    assert p["blocked"] == []
+    assert sorted(_names(p["canary"] + p["fleet"])) == ["prod1", "prodcanary"]
+    assert p["notes"] and "dry-run only" in p["notes"][0]
+
+
+def test_live_run_still_withholds_outside_window(fleet_repo):
+    before = fleet_repo.first
+    fleet_repo.write("fleet/pins/prod.yml", {"ring": "prod", "pins": {"X": "2.0.0"}})
+    after = fleet_repo.commit("prod bump")
+
+    p = plan_converge.plan("push", before=before, after=after, now=OUT_OF_WINDOW, dry_run=False)
+
+    assert p["blocked"] and p["fleet"] == [] and p["notes"] == []

@@ -8,7 +8,8 @@ Called by converge.yml's `plan` job. Emits JSON on stdout:
       "canary":       [entry, ...],   # deployed first (tenants with canary: true)
       "fleet":        [entry, ...],   # deployed after every canary succeeded
       "max_parallel": 5,              # smallest max_parallel of the rings in "fleet"
-      "blocked":      ["prod: outside the change window ..."]
+      "blocked":      ["prod: outside the change window ..."],
+      "notes":        ["prod: outside the change window — dry-run only, ..."]
     }
     entry = {"tenant", "ring", "credentials_ref", "environment"}
 
@@ -24,6 +25,8 @@ Change windows are enforced HERE as well as on the PR: a ring with
 require_change_window is dropped (and reported in "blocked") when converge runs
 outside its window, unless the push only rolls the ring back to versions it
 already ran, or a dispatch sets --break-glass.
+With --dry-run (FLEET_LIVE off) nothing is deployed, so nothing is withheld:
+every tenant gets its dry-run plan and the window is reported in "notes".
 
 Each entry carries the tenant's credentials_ref and its ring's Environment
 (fleet/policies.yml rings.<ring>.environment) so the per-tenant job maps only
@@ -117,7 +120,8 @@ def affected(event, ring, before, after, profiles):
     return seen
 
 
-def plan(event, ring=None, before=None, after="HEAD", break_glass=False, now=None):
+def plan(event, ring=None, before=None, after="HEAD", break_glass=False, now=None,
+         dry_run=False):
     now = now or datetime.now(timezone.utc)
     ring_gate.set_repo(REPO)
     pol = load(REPO / "fleet" / "policies.yml")
@@ -126,17 +130,20 @@ def plan(event, ring=None, before=None, after="HEAD", break_glass=False, now=Non
     before = resolve_before(before, after) if event != "workflow_dispatch" else None
     names = affected(event, ring, before, after, profiles)
 
-    blocked, allowed_rings = [], {}
+    blocked, notes, allowed_rings = [], [], {}
     for r in sorted({profiles[t].get("ring") for t in names}):
         if event == "workflow_dispatch" and break_glass:
             allowed_rings[r] = True
-            blocked_msg = None
+            continue
+        ok, msg = ring_gate.converge_window(r, pol, before, after, now)
+        if ok or dry_run:
+            allowed_rings[r] = True
+            if not ok:
+                notes.append(f"{msg.split(';')[0]} — dry-run only, so planned anyway "
+                             f"(a live converge would be withheld)")
         else:
-            ok, msg = ring_gate.converge_window(r, pol, before, after, now)
-            allowed_rings[r] = ok
-            blocked_msg = None if ok else msg
-        if blocked_msg:
-            blocked.append(blocked_msg)
+            allowed_rings[r] = False
+            blocked.append(msg)
 
     canary, fleet = [], []
     for t in names:
@@ -153,7 +160,7 @@ def plan(event, ring=None, before=None, after="HEAD", break_glass=False, now=Non
     caps = [int(c) for c in caps if c]
     return {"canary": canary, "fleet": fleet,
             "max_parallel": min(caps) if caps else DEFAULT_MAX_PARALLEL,
-            "blocked": blocked}
+            "blocked": blocked, "notes": notes}
 
 
 def main():
@@ -164,13 +171,15 @@ def main():
     ap.add_argument("--after", default="HEAD", help="push: github.sha")
     ap.add_argument("--break-glass", action="store_true",
                     help="workflow_dispatch: deploy a windowed ring outside its window")
+    ap.add_argument("--dry-run", action="store_true",
+                    help="converge won't deploy (FLEET_LIVE off): don't withhold for windows")
     ap.add_argument("--now", help="override current time (ISO8601, testing)")
     args = ap.parse_args()
     if args.event == "workflow_dispatch" and not args.ring:
         ap.error("--ring is required for workflow_dispatch")
     now = datetime.fromisoformat(args.now.replace("Z", "+00:00")) if args.now else None
     print(json.dumps(plan(args.event, args.ring, args.before, args.after,
-                          args.break_glass, now)))
+                          args.break_glass, now, dry_run=args.dry_run)))
 
 
 if __name__ == "__main__":

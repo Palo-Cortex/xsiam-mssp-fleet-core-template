@@ -282,9 +282,14 @@ ring by ring with a pull request — never straight to production.
         if stranded:
             raise Abort(f"tenant(s) {', '.join(stranded)} are in rings this path doesn't have — "
                         f"move or delete them first")
+        if a["mssp"]:
+            ui.explain("""
+MSSP PARENT TRACK (optional): a separate ring for the MSSP's OWN XSIAM tenant,
+outside the customer promotion path. It needs that tenant's API key in step 4.
+Say no if you don't have a separate parent tenant — you can add it later.
+""")
         a["mssp_ring"] = bool(a["mssp"]) and ui.confirm(
-            "org.mssp_ring", "Also manage your own MSSP parent tenant on a separate track "
-            "(outside the customer promotion path)?", a.get("mssp_ring", False))
+            "org.mssp_ring", "Add an MSSP parent track for your own tenant?", a.get("mssp_ring", False))
 
         ui.explain("""
 SOAK = how many days a version must have run in the previous ring before it
@@ -433,12 +438,44 @@ that ring's Environment — it is never written to the repository.
                     ui.info("rings still without a tenant: " + ", ".join(missing))
                 prompt = "Add a tenant?" if not existing else "Add another tenant?"
                 if not ui.confirm(f"tenants.more.{i}", prompt, bool(missing)):
-                    if missing:
-                        ui.warn("every ring needs at least one tenant before you can publish — "
-                                "add them later with: python scripts/setup_wizard.py add-tenant")
-                    break
+                    if not missing:
+                        break
+                    nxt = self._resolve_empty_rings(missing, i)
+                    if nxt is None:
+                        break
+                    missing = [nxt]
             self.add_tenant(f"tenants.{i}", default_ring=(missing or self.all_rings())[0])
             i += 1
+
+    def _resolve_empty_rings(self, missing, i):
+        """The user wants to stop but some rings have no tenant. Returns the
+        ring to add a tenant to next, or None to stop."""
+        ui = self.ui
+        ui.warn(f"every ring needs at least one tenant — still empty: {', '.join(missing)}")
+        for ring in missing:
+            options = [("add", f"Add a tenant to {ring} now")]
+            if ring == config.MSSP_RING:
+                options.append(("drop", "Remove the MSSP parent track (add it back later with --step org)"))
+            options.append(("later", "Stop for now (checks fail until it has one; "
+                                     "use: python scripts/setup_wizard.py add-tenant)"))
+            choice = ui.choose(f"tenants.empty.{i}.{ring}", f"Ring '{ring}' has no tenant:", options, "add")
+            if choice == "add":
+                return ring
+            if choice == "drop":
+                self._drop_mssp_ring()
+                ui.ok("removed the MSSP parent track")
+            if choice == "later":
+                return None
+        return None
+
+    def _drop_mssp_ring(self):
+        self.a["mssp_ring"] = False
+        self.save()
+        config.remove_ring_policy(self.repo, config.MSSP_RING)
+        f = self.repo / "fleet" / "pins" / f"{config.MSSP_RING}.yml"
+        if f.exists():
+            f.unlink()
+        config.update_workflow_choices(self.repo, self.rings(), False)
 
     def add_tenant(self, key, default_ring=None):
         ui = self.ui
@@ -635,7 +672,7 @@ without it you re-trigger ring-gate on promote PRs by hand.
     # --- 6 verify ------------------------------------------------------------
     def step_verify(self):
         ui = self.ui
-        problems = 0
+        problems = []        # (what, how to fix)
         code, msg = self.script("mssp_catalog.py", "--write")
         on_disk = {f.stem for f in (self.repo / "fleet" / "pins").glob("*.yml")}
         rings = [r_ for r_ in self.all_rings() if r_ in on_disk] + sorted(on_disk - set(self.all_rings()))
@@ -643,13 +680,26 @@ without it you re-trigger ring-gate on promote PRs by hand.
         checks += [("namespace contract", ["namespace_lint.py"]),
                    ("Config Overlays", ["config_overlay_lint.py"]),
                    ("MSSP pack catalog", ["mssp_catalog.py", "--check"])]
+        tenants = config.tenants(self.repo)
         for title, args in checks:
             code, msg = self.script(*args)
             if code == 0:
                 ui.ok(title)
+                continue
+            ui.fail(f"{title}:\n      " + "\n      ".join(msg.splitlines()[-4:]))
+            ring = args[2] if args[0] == "resolve.py" else None
+            if ring and not any(p.get("ring") == ring for p in tenants.values()):
+                fix = "add a tenant to it:  python scripts/setup_wizard.py add-tenant"
+                if ring == config.MSSP_RING:
+                    fix += ("\n       or remove the MSSP parent track:  "
+                            "python scripts/setup_wizard.py --step org  (answer no to the parent track)")
+                problems.append((f"ring '{ring}' has no tenant", fix))
+            elif ring:
+                problems.append((f"ring '{ring}' doesn't resolve: {msg.splitlines()[-1]}",
+                                 f"pin the missing pack(s) in fleet/pins/{ring}.yml"))
             else:
-                problems += 1
-                ui.fail(f"{title}:\n      " + "\n      ".join(msg.splitlines()[-4:]))
+                problems.append((f"{title}: {msg.splitlines()[-1] if msg else 'failed'}",
+                                 "see the message above"))
 
         last = self.rings()[-1]
         ui.explain(f"""
@@ -668,8 +718,9 @@ ever installs the exact bytes you tested. Strongly recommended.
                         + "\n      ".join(msg.splitlines()[-4:]))
         code, msg = self.script("lock.py", "--check")
         if code:
-            problems += 1
             ui.fail("artifact lock:\n      " + "\n      ".join(msg.splitlines()[-4:]))
+            problems.append(("some pins in a require_lock ring aren't locked",
+                             "python scripts/lock.py --write   (then re-run the wizard)"))
 
         for t in sorted(config.tenants(self.repo)):
             code, msg = self.script("deploy_tenant.py", t, *([] if self.network else ["--offline"]))
@@ -678,8 +729,9 @@ ever installs the exact bytes you tested. Strongly recommended.
                 [ln for ln in msg.splitlines() if "!!" in ln or "ERROR" in ln or ln.startswith("#    ")][:5])
                 if bad else ""))
         if problems:
-            raise Abort(f"{problems} problem(s) above must be fixed before publishing. "
-                        f"Fix them (or re-run the step that sets them), then re-run the wizard.")
+            lines = "\n".join(f"  ✗ {what}\n     → {fix}" for what, fix in problems)
+            raise Abort(f"{len(problems)} problem(s) must be fixed before publishing:\n{lines}\n"
+                        f"Then re-run: python scripts/setup_wizard.py")
 
     def _set_require_lock(self, ring, value):
         p = self.repo / "fleet" / "policies.yml"

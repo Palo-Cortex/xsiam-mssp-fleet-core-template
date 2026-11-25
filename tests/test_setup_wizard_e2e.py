@@ -269,3 +269,44 @@ def test_changing_promotion_path_after_protection_is_refused(tmp_path, monkeypat
     with pytest.raises(Abort, match="migration"):
         wiz.run(only="org")
     assert config.chain(root) == ["qa", "prod"]
+
+
+def test_empty_mssp_ring_is_explained_with_the_fix(tmp_path, monkeypatch):
+    """Your answer said 'MSSP parent track: yes' but no tenant went there:
+    the stop message must name the ring and both ways out."""
+    monkeypatch.setenv("WIZ_TEST_KEY", "k")
+    root = scratch_fleet(tmp_path)
+    answers = _answers("dev-qa-prod", ["dev", "qa", "prod"])
+    answers["org"]["mssp_ring"] = True
+    wiz, _ = _wizard(root, answers, FakeGH())
+    with pytest.raises(Abort) as e:
+        wiz.run()
+    msg = str(e.value)
+    assert "ring 'mssp' has no tenant" in msg
+    assert "add-tenant" in msg and "--step org" in msg
+
+
+def test_stopping_with_empty_mssp_ring_offers_to_drop_it(tmp_path):
+    """Interactive: yes to the parent track, one tenant per customer ring, then
+    'no more tenants' -> the wizard offers to remove the empty mssp ring."""
+    root = scratch_fleet(tmp_path)
+    keys = iter([
+        "y", "2", "y", "", "", "", "", "", "n", "",          # MSSP, QA→Prod, parent track: yes
+        "",                                                  # base packs
+        "", "api-acme-qa.xdr.us.paloaltonetworks.com", "5", "k", "", "", "", "n",
+        "", "api-acme-prod.xdr.us.paloaltonetworks.com", "6", "k", "", "", "", "n", "n",
+        "n", "2",                                            # no more tenants -> drop mssp ring
+        "", "0", "n",                                        # approver, 0 approvals, skip App
+        "", "", "n", "n",
+    ])
+    import io
+    gh = FakeGH()
+    wiz = Wizard(root, UI(out=io.StringIO(), inp=lambda p="": next(keys), secret_inp=lambda p="": next(keys)),
+                 gh, catalog_loader=lambda: CATALOG, network=False,
+                 check_credentials=lambda u, i, k: (True, "ok", 1))
+    wiz.run()
+    assert next(keys, None) is None
+    assert "mssp" not in config.policies(root)["rings"]
+    assert not (root / "fleet" / "pins" / "mssp.yml").exists()
+    assert config.workflow_choices(root)["converge"] == ["qa", "prod"]
+    assert gh.protection["main"]["required_pull_request_reviews"]["required_approving_review_count"] == 0

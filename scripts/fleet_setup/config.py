@@ -159,6 +159,24 @@ def render_policies(rings, soak, change_window=None, require_lock=None,
     return "\n".join(out).rstrip() + "\n"
 
 
+def remove_ring_policy(repo, ring):
+    """Drop `rings.<ring>:` (and its block) from policies.yml, keeping the rest."""
+    p = Path(repo) / "fleet" / "policies.yml"
+    lines = p.read_text().splitlines(keepends=True)
+    out, skip = [], False
+    for line in lines:
+        if re.match(rf"^  {re.escape(ring)}:\s*$", line):
+            skip = True
+            continue
+        if skip and (re.match(r"^  \S", line) or re.match(r"^\S", line)):
+            skip = False
+        if not skip:
+            out.append(line)
+    text = "".join(out)
+    yaml.safe_load(text)
+    p.write_text(text)
+
+
 # --- pin files ---------------------------------------------------------------
 def render_pins(ring, source, pinmap):
     if source is None:

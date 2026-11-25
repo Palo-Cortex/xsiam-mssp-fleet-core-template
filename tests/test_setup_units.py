@@ -200,3 +200,58 @@ def test_doctor_flags_repo_level_secret_as_warning(tmp_path):
     sections = Doctor(root, gh=gh, offline=True).run()
     res = next(x for _s, rs in sections for x in rs if x.title == "secret for devlab01")
     assert res.status == WARN and "REPO secret" in res.detail
+
+
+# --- promotion App private key -----------------------------------------------
+KEY = "-----BEGIN RSA PRIVATE KEY-----\nabc\n-----END RSA PRIVATE KEY-----\n"
+
+
+def _pem_wizard(tmp_path, feed=None, answers=None, home=None, monkeypatch=None):
+    from fleet_setup.wizard import Wizard
+    if monkeypatch and home:
+        monkeypatch.setattr("pathlib.Path.home", lambda: home)
+    ui = UI(answers=answers, out=io.StringIO(), inp=feed)
+    return Wizard(tmp_path, ui, FakeGH())
+
+
+def test_pem_prompt_accepts_the_folder(tmp_path, monkeypatch):
+    d = tmp_path / "dl"
+    d.mkdir()
+    (d / "fleet-promote.2026-11-25.private-key.pem").write_text(KEY)
+    answers = iter([str(d)])
+    wiz = _pem_wizard(tmp_path, feed=lambda p: next(answers), home=tmp_path, monkeypatch=monkeypatch)
+    assert wiz._ask_pem("fleet-promote").name == "fleet-promote.2026-11-25.private-key.pem"
+
+
+def test_pem_prompt_lets_you_pick_among_several(tmp_path, monkeypatch):
+    d = tmp_path / "dl"
+    d.mkdir()
+    (d / "other.pem").write_text(KEY)
+    (d / "fleet-promote.private-key.pem").write_text(KEY)
+    answers = iter([str(d), "2"])          # folder, then pick the 2nd listed
+    wiz = _pem_wizard(tmp_path, feed=lambda p: next(answers), home=tmp_path, monkeypatch=monkeypatch)
+    assert wiz._ask_pem("fleet-promote").name == "other.pem"   # app's own key is listed first
+
+
+def test_pem_prompt_defaults_to_the_apps_key_in_downloads(tmp_path, monkeypatch):
+    dl = tmp_path / "Downloads"
+    dl.mkdir()
+    key = dl / "fleet-promote.2026-11-25.private-key.pem"
+    key.write_text(KEY)
+    wiz = _pem_wizard(tmp_path, feed=lambda p: "", home=tmp_path, monkeypatch=monkeypatch)
+    assert wiz._ask_pem("fleet-promote") == key                 # Enter accepts it
+
+
+def test_pem_prompt_rejects_non_keys_and_explains_folders(tmp_path, monkeypatch):
+    from fleet_setup.wizard import _pem_file
+    (tmp_path / "x.pem").write_text("not a key")
+    assert "isn't a .pem private key" in _pem_file(str(tmp_path / "x.pem"))
+    assert "is a folder" in _pem_file(str(tmp_path))
+
+
+def test_pem_unattended_folder_with_no_key_fails_clearly(tmp_path, monkeypatch):
+    (tmp_path / "empty").mkdir()
+    wiz = _pem_wizard(tmp_path, answers={"app": {"private_key_path": str(tmp_path / "empty")}},
+                      home=tmp_path, monkeypatch=monkeypatch)
+    with pytest.raises(AnswerError, match="no .pem file"):
+        wiz._ask_pem("fleet-promote")

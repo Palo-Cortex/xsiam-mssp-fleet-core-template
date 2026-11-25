@@ -589,17 +589,48 @@ without it you re-trigger ring-gate on promote PRs by hand.
         ui.explain(f"""
   1. Open (pre-filled):  {url}
   2. Click "Create GitHub App". Note the App ID shown at the top.
-  3. Under "Private keys", click "Generate a private key" (a .pem downloads).
+  3. Under "Private keys", click "Generate a private key". A file named like
+     {name}.<date>.private-key.pem downloads (usually to ~/Downloads).
   4. Left menu → "Install App" → install it on ONLY {self.gh.repo}.
 """)
         app_id = ui.ask("app.id", "App ID", validate=lambda v: None if v.isdigit() else "a number")
-        pem = ui.ask("app.private_key_path", "Path to the downloaded .pem file",
-                     validate=_pem_file)
+        pem = self._ask_pem(name)
         self.gh.set_variable("FLEET_APP_ID", app_id)
-        self.gh.set_secret("FLEET_APP_PRIVATE_KEY", Path(os.path.expanduser(pem)).read_text())
+        self.gh.set_secret("FLEET_APP_PRIVATE_KEY", pem.read_text())
         ui.ok("stored FLEET_APP_ID and FLEET_APP_PRIVATE_KEY")
         ui.info(f"you can now delete {pem}")
         self.a["app"] = "configured"
+
+    def _ask_pem(self, app_name):
+        """The App's private-key file. Accepts the file itself or the folder it
+        was downloaded to (the newest matching .pem there is offered)."""
+        ui = self.ui
+        dflt = _find_pem(Path.home() / "Downloads", app_name)
+        while True:
+            raw = ui.ask("app.private_key_path",
+                         "Full path AND file name of the downloaded .pem "
+                         "(or just the folder it's in)",
+                         str(dflt) if dflt else None, validate=lambda v: None if v else "required")
+            p = Path(os.path.expanduser(raw.strip().strip("'\"")))
+            if p.is_dir():
+                found = _pem_candidates(p, app_name)
+                if not found:
+                    ui.fail(f"no .pem file in {p}")
+                    if ui.unattended:
+                        raise AnswerError(f"app.private_key_path: no .pem file in {p}")
+                    continue
+                if len(found) == 1:
+                    p = found[0]
+                    ui.info(f"found {p.name}")
+                else:
+                    p = ui.choose("app.private_key_choice", f"Several .pem files in {raw}:",
+                                  [(f, f.name) for f in found], found[0])
+            err = _pem_file(str(p))
+            if not err:
+                return p
+            ui.fail(err)
+            if ui.unattended:
+                raise AnswerError(f"app.private_key_path: {err}")
 
     # --- 6 verify ------------------------------------------------------------
     def step_verify(self):
@@ -860,8 +891,25 @@ def _days(x):
     return None if parts and all(p in DAYS for p in parts) else "e.g. Tue,Wed,Thu"
 
 
+def _pem_candidates(folder, app_name=""):
+    """.pem files in `folder`, the App's own key first, then newest first."""
+    try:
+        pems = [f for f in Path(folder).glob("*.pem") if f.is_file()]
+    except OSError:
+        return []
+    return sorted(pems, key=lambda f: (not f.name.startswith(app_name), -f.stat().st_mtime))
+
+
+def _find_pem(folder, app_name):
+    """The App's downloaded key in `folder`, if exactly recognisable."""
+    own = [f for f in _pem_candidates(folder, app_name) if app_name and f.name.startswith(app_name)]
+    return own[0] if own else None
+
+
 def _pem_file(x):
     p = Path(os.path.expanduser(x))
+    if p.is_dir():
+        return f"{p} is a folder — give the .pem file inside it"
     if not p.is_file():
         return f"no file at {p}"
     return None if "PRIVATE KEY" in p.read_text(errors="replace")[:200] else "that isn't a .pem private key"

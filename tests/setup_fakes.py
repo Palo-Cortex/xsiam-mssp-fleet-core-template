@@ -155,7 +155,7 @@ def scratch_fleet(tmp_path):
     shutil.copytree(REPO_ROOT / "tests" / "fixtures" / "Packs", root / "Packs")
     shutil.copy(tpl / "mssp_pack_catalog.json", root / "mssp_pack_catalog.json")
     from fleet_setup import config
-    config.update_workflow_choices(root, ["dev", "qa", "prod"], mssp_ring=True)
+    config.update_workflow_choices(root, ["dev", "qa", "prod"])
     origin = tmp_path / "origin.git"
     subprocess.run(["git", "init", "-q", "--bare", "-b", "main", str(origin)], check=True)
     git(root, "init", "-q", "-b", "main")

@@ -37,12 +37,6 @@
 promotion_order: [dev, qa, prod]
 
 rings:
-  mssp:
-    source: null            # standalone MSSP parent ring — NOT in promotion_order,
-    min_soak_days: 0        # so it's never a promote source/target. Pins authored
-    require_dry_run: false   # freely here; ring-gate applies no soak/no-skip check.
-    environment: fleet-mssp
-
   dev:
     source: null            # head of the chain — pins are authored/bumped here
     min_soak_days: 0

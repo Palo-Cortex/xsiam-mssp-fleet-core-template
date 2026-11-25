@@ -15,10 +15,17 @@ It works whether or not you're an MSSP, for any of these promotion paths:
 | **QA → Prod** | Validate in QA, release to production |
 | **Dev → Prod** | Build and validate in dev, release to production |
 
-MSSPs can also put their own parent tenant on a separate track. If tenant
-owners build and publish their own content (for example "build in production,
-then release"), you register a name prefix for them so the fleet never touches
-that content.
+Each ring can hold **any number of tenants**: typically one or two in dev and
+qa, and every production tenant you manage — yours and/or your customers' — in
+prod. Every tenant in a ring gets a version when it's promoted to that ring
+(canary tenants first). Add more at any time with `add-tenant`.
+
+Only operational (child) tenants are managed: an XSIAM parent/console tenant
+can't run playbooks or scripts, so there's nothing to deploy to it.
+
+If tenant owners build and publish their own content (for example "build in
+production, then release"), you register a name prefix for them so the fleet
+never touches that content.
 
 ## Before you start
 
@@ -36,7 +43,7 @@ that content.
 | 1 Check tools | — | verifies Python, git, `gh` login, your own repo, admin, clean `main` |
 | 2 Organisation | MSSP or not, promotion path, soak days, prod change window, whether tenant owners publish their own content | `fleet/policies.yml`, `fleet/pins/<ring>.yml`, workflow ring choices, `release_base`; removes the template examples |
 | 3 Content | packs every tenant gets (from the upstream catalog) | `fleet/defaults.yml › base`, pins at the catalog's current versions |
-| 4 Tenants | each tenant's API URL, key ID, key; its ring; canary; owner prefix | key **checked live**, stored as `<TENANT>_CREDS` in the ring's GitHub Environment; `fleet/tenants/<name>.yml` |
+| 4 Tenants | at least one tenant per ring, then any additional (e.g. customer production) tenants: API URL, key ID, key; ring; canary; owner prefix | key **checked live**, stored as `<TENANT>_CREDS` in the ring's GitHub Environment; `fleet/tenants/<name>.yml` |
 | 5 Approvers | who approves prod, PR approvals, optional promotion App | `.github/CODEOWNERS`, `FLEET_APP_ID` / `FLEET_APP_PRIVATE_KEY` |
 | 6 Check | lock artifacts? | runs ring-gate's checks, `fleet/artifacts.lock.yml`, `require_lock` for prod, dry-run plans |
 | 7 Save | — | commits and pushes (straight to `main` the first time; a PR afterwards) |

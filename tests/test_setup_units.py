@@ -123,9 +123,9 @@ def test_tenant_name_rejects(bad):
 def test_render_policies_is_a_valid_chain(topology):
     rings = config.TOPOLOGIES[topology]
     pol = yaml.safe_load(config.render_policies(rings, {r: 4 for r in rings}, None,
-                                                {rings[-1]: True}, mssp_ring=True))
+                                                {rings[-1]: True}))
     assert pol["promotion_order"] == rings
-    assert pol["rings"]["mssp"]["source"] is None
+    assert set(pol["rings"]) == set(rings)
     for i, r in enumerate(rings):
         assert pol["rings"][r]["source"] == (rings[i - 1] if i else None)
     assert pol["rings"][rings[-1]]["require_lock"] is True
@@ -152,7 +152,7 @@ def test_workflow_choices_round_trip(tmp_path):
     original = (root / ".github" / "workflows" / "converge.yml").read_text()
     config.update_workflow_choices(root, ["qa", "prod"])
     assert config.workflow_choices(root) == {"converge": ["qa", "prod"], "promote": ["prod"]}
-    config.update_workflow_choices(root, ["dev", "qa", "prod"], mssp_ring=True)
+    config.update_workflow_choices(root, ["dev", "qa", "prod"])
     assert (root / ".github" / "workflows" / "converge.yml").read_text() == original
 
 

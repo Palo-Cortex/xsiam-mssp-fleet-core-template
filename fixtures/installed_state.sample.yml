@@ -12,7 +12,7 @@
 #   • devlab01          Base 1.0.0                     -> Marketplace; NEVER deleted
 #   • devlab01          acme-detections 0.4.0          -> customer-owned; NEVER touched
 #   • qacanary01  soc-optimization-unified 3.10.2 -> DRIFT (pinned 3.10.3)
-#   • prodcustomer01 / msspparent                  -> in sync
+#   • prodcustomer01                               -> in sync
 #
 # The orphan is in the upstream catalog, so it is inside the bounded deletable
 # set and deploy_tenant.py will delete it (preview with --installed). Base is
@@ -37,9 +37,5 @@ qacanary01:
   VirusTotal: 2.7.22
 
 prodcustomer01:                        # base-only prod tenant, in sync
-  soc-optimization-unified: 3.10.3
-  soc-framework-nist-ir: 1.6.3
-
-msspparent:                         # MSSP parent (mssp ring), in sync
   soc-optimization-unified: 3.10.3
   soc-framework-nist-ir: 1.6.3

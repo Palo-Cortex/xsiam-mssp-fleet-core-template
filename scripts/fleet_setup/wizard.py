@@ -119,7 +119,7 @@ class Wizard:
         return config.TOPOLOGIES[self.a["topology"]] if self.a.get("topology") else config.chain(self.repo)
 
     def all_rings(self):
-        return self.rings() + ([config.MSSP_RING] if self.a.get("mssp_ring") else [])
+        return self.rings()
 
     def bootstrap(self):
         """True until the config has been published with protections on: pins
@@ -259,9 +259,14 @@ approvals). The wizard can create one from this template now.
                 "org.reconfigure", "Your promotion path is already set. Change it?", False):
             return
         ui.explain("""
-A "ring" is a stage your content passes through, each with its own XSIAM
-tenant(s). A pack version is always deployed to the first ring, then PROMOTED
-ring by ring with a pull request — never straight to production.
+A "ring" is a stage your content passes through (e.g. dev, qa, prod). A pack
+version is always deployed to the first ring, then PROMOTED ring by ring with a
+pull request — never straight to production.
+
+A ring can hold ANY NUMBER of XSIAM tenants. prod usually holds every
+production tenant you manage (yours and/or your customers'); they all receive a
+version when it's promoted to prod. Only operational (child) tenants are
+managed — an XSIAM parent/console tenant can't run content.
 """)
         a["mssp"] = ui.confirm("org.mssp", "Do you manage XSIAM tenants on behalf of other "
                                "organisations (are you an MSSP)?", a.get("mssp", False))
@@ -278,18 +283,12 @@ ring by ring with a pull request — never straight to production.
         rings = self.rings()
         existing_t = config.tenants(self.repo)
         stranded = [t for t, p in existing_t.items() if t not in config.EXAMPLE_TENANTS
-                    and p.get("ring") not in rings + [config.MSSP_RING]]
+                    and p.get("ring") not in rings]
         if stranded:
             raise Abort(f"tenant(s) {', '.join(stranded)} are in rings this path doesn't have — "
-                        f"move or delete them first")
-        if a["mssp"]:
-            ui.explain("""
-MSSP PARENT TRACK (optional): a separate ring for the MSSP's OWN XSIAM tenant,
-outside the customer promotion path. It needs that tenant's API key in step 4.
-Say no if you don't have a separate parent tenant — you can add it later.
-""")
-        a["mssp_ring"] = bool(a["mssp"]) and ui.confirm(
-            "org.mssp_ring", "Add an MSSP parent track for your own tenant?", a.get("mssp_ring", False))
+                        f"move them to one of {', '.join(rings)} (edit `ring:` in "
+                        f"fleet/tenants/<name>.yml) or delete them first")
+        a.pop("mssp_ring", None)        # older wizard versions offered a parent-tenant ring
 
         ui.explain("""
 SOAK = how many days a version must have run in the previous ring before it
@@ -346,11 +345,11 @@ prefix per tenant in step 4.
         lock_now = {r_: bool((config.policies(self.repo).get("rings") or {}).get(r_, {}).get("require_lock"))
                     for r_ in rings}
         (self.repo / "fleet" / "policies.yml").write_text(config.render_policies(
-            rings, soak, a["change_window"], require_lock=lock_now, mssp_ring=a["mssp_ring"]))
-        gone = config.set_rings(self.repo, rings, a["mssp_ring"])
+            rings, soak, a["change_window"], require_lock=lock_now))
+        gone = config.set_rings(self.repo, rings)
         for g in gone:
             ui.info(f"removed ring {g} (fleet/pins/{g}.yml)")
-        config.update_workflow_choices(self.repo, rings, a["mssp_ring"])
+        config.update_workflow_choices(self.repo, rings)
         server = self.gh.server_url() if hasattr(self.gh, "server_url") else "https://github.com"
         # prefixes come only from real tenants (drops the template's example `acme-`)
         ns = sorted({p.get("customer_namespace") for p in config.tenants(self.repo).values()
@@ -408,7 +407,7 @@ Framework catalog and are pinned to an exact version (never "latest").
             pins = {p: v for p, v in config.pins(self.repo, ring).items()
                     if p not in base and p in used}
             pins.update({p: cat[p] for p in base})
-            src = None if ring == config.MSSP_RING or i == 0 else rings[i - 1]
+            src = None if i == 0 else rings[i - 1]
             config.write_pins(self.repo, ring, src, pins)
         ui.ok(f"{len(base)} base pack(s) pinned in {', '.join(rings)}")
 
@@ -416,9 +415,13 @@ Framework catalog and are pinned to an exact version (never "latest").
     def step_tenants(self):
         ui = self.ui
         ui.explain("""
-For each XSIAM tenant you need an API key. The wizard checks the key against
-the tenant right away and stores it as an encrypted GitHub secret, scoped to
-that ring's Environment — it is never written to the repository.
+Add at least one tenant per ring — then as many more as you manage: typically
+every additional production tenant (yours or your customers') goes in prod.
+You can always add more later with: python scripts/setup_wizard.py add-tenant
+
+For each tenant you need an API key. The wizard checks the key against the
+tenant right away and stores it as an encrypted GitHub secret, scoped to that
+ring's Environment — it is never written to the repository.
 """)
         ui.say(xsiam.HOW_TO_CREATE_KEY)
         planned = self.ui.lookup("tenants") if ui.unattended else None
@@ -436,7 +439,9 @@ that ring's Environment — it is never written to the repository.
                         f"{t} ({p.get('ring')})" for t, p in existing.items()))
                 if missing:
                     ui.info("rings still without a tenant: " + ", ".join(missing))
-                prompt = "Add a tenant?" if not existing else "Add another tenant?"
+                prompt = ("Add a tenant?" if not existing else
+                          "Add another tenant?" if missing else
+                          "Add another tenant (e.g. more production tenants)?")
                 if not ui.confirm(f"tenants.more.{i}", prompt, bool(missing)):
                     if not missing:
                         break
@@ -454,28 +459,13 @@ that ring's Environment — it is never written to the repository.
         ui.warn(f"every ring needs at least one tenant — still empty: {', '.join(missing)}")
         for ring in missing:
             options = [("add", f"Add a tenant to {ring} now")]
-            if ring == config.MSSP_RING:
-                options.append(("drop", "Remove the MSSP parent track (add it back later with --step org)"))
             options.append(("later", "Stop for now (checks fail until it has one; "
                                      "use: python scripts/setup_wizard.py add-tenant)"))
             choice = ui.choose(f"tenants.empty.{i}.{ring}", f"Ring '{ring}' has no tenant:", options, "add")
             if choice == "add":
                 return ring
-            if choice == "drop":
-                self._drop_mssp_ring()
-                ui.ok("removed the MSSP parent track")
-            if choice == "later":
-                return None
+            return None
         return None
-
-    def _drop_mssp_ring(self):
-        self.a["mssp_ring"] = False
-        self.save()
-        config.remove_ring_policy(self.repo, config.MSSP_RING)
-        f = self.repo / "fleet" / "pins" / f"{config.MSSP_RING}.yml"
-        if f.exists():
-            f.unlink()
-        config.update_workflow_choices(self.repo, self.rings(), False)
 
     def add_tenant(self, key, default_ring=None):
         ui = self.ui
@@ -512,7 +502,7 @@ that ring's Environment — it is never written to the repository.
                       validate=lambda v: config.tenant_name_error(v, existing))
         display = ui.ask(f"{key}.display_name", "Display name", name)
         ring = ui.choose(f"{key}.ring", "Which ring is this tenant in?",
-                         [(r_, r_) for r_ in rings], default_ring or rings[0])
+                         [(r_, _ring_label(r_, rings)) for r_ in rings], default_ring or rings[0])
         t = {"name": name, "display_name": display, "ring": ring,
              "credentials_ref": config.credentials_ref(name), "extras": []}
         label = xsiam.tenant_label(url).lower()
@@ -520,9 +510,13 @@ that ring's Environment — it is never written to the repository.
             t["host_token"] = re.sub(r"[^a-z0-9-]", "", label)
             ui.info(f"host guard will expect '{t['host_token']}' in the API host "
                     f"(blocks deploying with another tenant's key)")
-        if ring == self.rings()[-1] and ui.confirm(
-                f"{key}.canary", f"Deploy to this tenant FIRST when {ring} changes (canary)?", False):
-            t["canary"] = True
+        if ring == self.rings()[-1]:
+            ui.explain(f"""
+CANARY: when {ring} changes, canary tenants are deployed first and every other
+{ring} tenant waits until they succeed. Pick one or two low-risk tenants.
+""")
+            if ui.confirm(f"{key}.canary", f"Make {name} a canary?", False):
+                t["canary"] = True
         if self.a.get("self_publish") and ui.confirm(
                 f"{key}.self_publish", "Does this tenant's owner publish their own content?", False):
             prefix = ui.ask(f"{key}.prefix", "Their content name prefix", f"{name}-",
@@ -569,7 +563,7 @@ that ring's Environment — it is never written to the repository.
         for ring in upto:
             pins = config.pins(self.repo, ring)
             pins.update({p: cat[p] for p in extras if p not in pins})
-            src = None if ring == config.MSSP_RING or ring == rings[0] else rings[rings.index(ring) - 1]
+            src = None if ring == rings[0] else rings[rings.index(ring) - 1]
             config.write_pins(self.repo, ring, src, pins)
 
     # --- 5 owners ------------------------------------------------------------
@@ -690,9 +684,6 @@ without it you re-trigger ring-gate on promote PRs by hand.
             ring = args[2] if args[0] == "resolve.py" else None
             if ring and not any(p.get("ring") == ring for p in tenants.values()):
                 fix = "add a tenant to it:  python scripts/setup_wizard.py add-tenant"
-                if ring == config.MSSP_RING:
-                    fix += ("\n       or remove the MSSP parent track:  "
-                            "python scripts/setup_wizard.py --step org  (answer no to the parent track)")
                 problems.append((f"ring '{ring}' has no tenant", fix))
             elif ring:
                 problems.append((f"ring '{ring}' doesn't resolve: {msg.splitlines()[-1]}",
@@ -925,6 +916,14 @@ on a lab tenant.
                 self.gh.repo = d.repo_meta["name_with_owner"]
             healthy = self.remote_check() and healthy
         return healthy
+
+
+def _ring_label(ring, rings):
+    if ring == rings[-1]:
+        return f"{ring}  — production (all your production tenants go here)"
+    if ring == rings[0]:
+        return f"{ring}  — first stage (new versions land here first)"
+    return f"{ring}  — validation before {rings[-1]}"
 
 
 # --- validators --------------------------------------------------------------

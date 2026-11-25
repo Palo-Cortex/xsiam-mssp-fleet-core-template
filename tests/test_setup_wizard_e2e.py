@@ -31,7 +31,7 @@ def _answers(topology, rings):
                     "display_name": "Acme Corp", "ring": last, "canary": True,
                     "self_publish": True, "prefix": "acme-"})
     return {
-        "org": {"mssp": True, "topology": topology, "mssp_ring": False,
+        "org": {"mssp": True, "topology": topology,
                 "soak": {r: 2 for r in rings[1:]}, "change_window": True,
                 "window": {"days": "Tue,Thu", "start": "13:00", "end": "21:00"},
                 "self_publish": True, "keep_example_pack": False},
@@ -246,6 +246,7 @@ def test_documented_example_answers_file_runs(tmp_path, monkeypatch):
     import fleet_setup.wizard as wizmod
     monkeypatch.setenv("ACME_QA_KEY", "q")
     monkeypatch.setenv("ACME_PROD_KEY", "p")
+    monkeypatch.setenv("BETA_PROD_KEY", "b")
     monkeypatch.setattr(wizmod.time, "sleep", lambda s: None)
     answers = yaml.safe_load((REPO_ROOT / "docs" / "setup-answers.example.yml").read_text())
     root = scratch_fleet(tmp_path)
@@ -271,31 +272,31 @@ def test_changing_promotion_path_after_protection_is_refused(tmp_path, monkeypat
     assert config.chain(root) == ["qa", "prod"]
 
 
-def test_empty_mssp_ring_is_explained_with_the_fix(tmp_path, monkeypatch):
-    """Your answer said 'MSSP parent track: yes' but no tenant went there:
-    the stop message must name the ring and both ways out."""
+def test_empty_ring_is_explained_with_the_fix(tmp_path, monkeypatch):
+    """A ring left without a tenant: the stop message names it and the fix."""
     monkeypatch.setenv("WIZ_TEST_KEY", "k")
     root = scratch_fleet(tmp_path)
     answers = _answers("dev-qa-prod", ["dev", "qa", "prod"])
-    answers["org"]["mssp_ring"] = True
+    answers["tenants"] = [t for t in answers["tenants"] if t["ring"] != "qa"]
     wiz, _ = _wizard(root, answers, FakeGH())
     with pytest.raises(Abort) as e:
         wiz.run()
-    msg = str(e.value)
-    assert "ring 'mssp' has no tenant" in msg
-    assert "add-tenant" in msg and "--step org" in msg
+    assert "ring 'qa' has no tenant" in str(e.value)
+    assert "add-tenant" in str(e.value)
 
 
-def test_stopping_with_empty_mssp_ring_offers_to_drop_it(tmp_path):
-    """Interactive: yes to the parent track, one tenant per customer ring, then
-    'no more tenants' -> the wizard offers to remove the empty mssp ring."""
+def test_stopping_with_an_empty_ring_offers_to_add_one(tmp_path):
+    """Interactive: one tenant in qa, then 'no more' -> the wizard says prod is
+    empty and offers to add one there; then more prod tenants can follow."""
     root = scratch_fleet(tmp_path)
     keys = iter([
-        "y", "2", "y", "", "", "", "", "", "n", "",          # MSSP, QA→Prod, parent track: yes
+        "y", "2", "", "", "", "", "", "n", "",               # MSSP, QA→Prod, defaults
         "",                                                  # base packs
         "", "api-acme-qa.xdr.us.paloaltonetworks.com", "5", "k", "", "", "", "n",
-        "", "api-acme-prod.xdr.us.paloaltonetworks.com", "6", "k", "", "", "", "n", "n",
-        "n", "2",                                            # no more tenants -> drop mssp ring
+        "n", "1",                                            # no more? -> prod empty -> add one
+        "api-acme-prod.xdr.us.paloaltonetworks.com", "6", "k", "", "", "", "y", "n",
+        "y", "api-beta.xdr.us.paloaltonetworks.com", "7", "k", "", "", "2", "n", "n",  # extra prod tenant
+        "n",                                                 # done
         "", "0", "n",                                        # approver, 0 approvals, skip App
         "", "", "n", "n",
     ])
@@ -306,7 +307,29 @@ def test_stopping_with_empty_mssp_ring_offers_to_drop_it(tmp_path):
                  check_credentials=lambda u, i, k: (True, "ok", 1))
     wiz.run()
     assert next(keys, None) is None
-    assert "mssp" not in config.policies(root)["rings"]
-    assert not (root / "fleet" / "pins" / "mssp.yml").exists()
-    assert config.workflow_choices(root)["converge"] == ["qa", "prod"]
+    t = config.tenants(root)
+    assert {n: p["ring"] for n, p in t.items()} == {"acme-qa": "qa", "acme-prod": "prod", "beta": "prod"}
+    assert t["acme-prod"].get("canary") is True and not t["beta"].get("canary")
     assert gh.protection["main"]["required_pull_request_reviews"]["required_approving_review_count"] == 0
+
+
+def test_rerunning_org_removes_a_legacy_parent_ring(tmp_path, monkeypatch):
+    """Repos set up with an older wizard may carry an `mssp` parent ring;
+    re-running step 2 removes it (pin file, policy, workflow choice)."""
+    monkeypatch.setenv("WIZ_TEST_KEY", "k")
+    root = scratch_fleet(tmp_path)
+    (root / "fleet" / "pins" / "mssp.yml").write_text("ring: mssp\npins: {}\n")
+    pol = root / "fleet" / "policies.yml"
+    pol.write_text(pol.read_text() + "  mssp:\n    source: null\n    environment: fleet-mssp\n")
+    wf = root / ".github" / "workflows" / "converge.yml"
+    wf.write_text(wf.read_text().replace("options: [dev, qa, prod]", "options: [dev, qa, prod, mssp]"))
+    git(root, "add", "-A")
+    git(root, "commit", "-qm", "legacy parent ring")
+    git(root, "push", "-q", "origin", "main")
+    answers = _answers("dev-qa-prod", ["dev", "qa", "prod"])
+    wiz, _ = _wizard(root, answers, FakeGH())
+    wiz.run(only="preflight")
+    wiz.run(only="org")
+    assert not (root / "fleet" / "pins" / "mssp.yml").exists()
+    assert "mssp" not in config.policies(root)["rings"]
+    assert config.workflow_choices(root)["converge"] == ["dev", "qa", "prod"]

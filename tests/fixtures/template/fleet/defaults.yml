@@ -87,3 +87,9 @@ customer_namespaces:
 # them (e.g. a pack a customer now owns via Marketplace). Customer-prefixed ids
 # and each tenant's `custom:` ids are already protected.
 never_delete: []
+
+# Where this fleet's own history starts. Only packs pinned in fleet/pins/ from
+# this commit on count as fleet-managed for orphan deletion, so the template's
+# example pins (e.g. VirusTotal) are never deleted from your tenants. The setup
+# wizard's first save is found automatically; set this only for a fleet set up
+# by hand:  fleet_history_since: <commit sha>

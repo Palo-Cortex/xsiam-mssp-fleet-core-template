@@ -144,16 +144,66 @@ def test_orphans_bounded_by_fleet_managed_ids_not_catalog(temp_fleet, monkeypatc
     assert orphans == ["Removed"]
 
 
-def test_pinned_history_ids_parses_git_log(monkeypatch):
+def test_pinned_history_ids_counts_only_added_pins(monkeypatch):
     log = "\n".join(["--- a/fleet/pins/dev.yml", "+++ b/fleet/pins/dev.yml",
                      "+  VirusTotal: 2.7.22", "-  OldPack: 1.0.0  # comment",
                      "+ring: dev", "+pins:", "+# header"])
 
     class R:
         stdout = log
+        returncode = 0
+    monkeypatch.setattr(deploy_tenant, "fleet_history_since", lambda: None)
     monkeypatch.setattr(deploy_tenant.subprocess, "run", lambda *a, **k: R())
 
-    assert deploy_tenant.pinned_history_ids() == {"VirusTotal", "OldPack"}
+    assert deploy_tenant.pinned_history_ids() == {"VirusTotal"}
+
+
+def _history_repo(tmp_path, monkeypatch, marker=True):
+    """Template history pins VirusTotal; the fleet's setup commit removes it
+    and pins base; later the fleet pins and then unpins X."""
+    import subprocess as sp
+    root = tmp_path / "hist"
+    (root / "fleet" / "pins").mkdir(parents=True)
+    def g(*a):
+        sp.run(["git", "-C", str(root), *a], check=True, capture_output=True)
+    def pins(body, policies, msg):
+        (root / "fleet" / "pins" / "dev.yml").write_text("ring: dev\npins:\n" + body)
+        (root / "fleet" / "policies.yml").write_text(policies)
+        (root / "fleet" / "defaults.yml").write_text("base: []\n")
+        g("add", "-A"); g("commit", "-qm", msg)
+    g("init", "-q", "-b", "main"); g("config", "user.email", "t@x"); g("config", "user.name", "t")
+    g("config", "commit.gpgsign", "false")
+    pins("  VirusTotal: 2.7.22\n", "# template\n", "template example")
+    head = "# " + deploy_tenant.SETUP_MARKER + "\n" if marker else "# hand-made\n"
+    pins("  soc-base: 1.0.0\n", head, "setup")
+    pins("  soc-base: 1.0.0\n  X: 1.0.0\n", head, "add X")
+    pins("  soc-base: 1.0.0\n", head, "remove X")
+    monkeypatch.setattr(deploy_tenant, "REPO", root)
+    import resolve
+    monkeypatch.setattr(resolve, "FLEET", root / "fleet")
+    return root
+
+
+def test_template_example_pins_are_not_fleet_managed(tmp_path, monkeypatch):
+    """Found on a real tenant: VirusTotal (installed there by someone else) was
+    flagged for deletion because the TEMPLATE's history once pinned it."""
+    _history_repo(tmp_path, monkeypatch)
+    assert deploy_tenant.pinned_history_ids() == {"soc-base", "X"}
+
+
+def test_without_setup_marker_all_added_pins_count(tmp_path, monkeypatch):
+    _history_repo(tmp_path, monkeypatch, marker=False)
+    assert deploy_tenant.fleet_history_since() is None
+    assert deploy_tenant.pinned_history_ids() == {"VirusTotal", "soc-base", "X"}
+
+
+def test_explicit_history_boundary_in_defaults(tmp_path, monkeypatch):
+    import subprocess as sp
+    root = _history_repo(tmp_path, monkeypatch, marker=False)
+    setup = sp.run(["git", "-C", str(root), "rev-list", "--max-count=1", "--skip=2", "HEAD"],
+                   capture_output=True, text=True).stdout.strip()
+    (root / "fleet" / "defaults.yml").write_text(f"base: []\nfleet_history_since: {setup}\n")
+    assert deploy_tenant.pinned_history_ids() == {"soc-base", "X"}
 
 
 # --- post-deploy verify ------------------------------------------------------

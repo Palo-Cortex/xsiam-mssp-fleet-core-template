@@ -98,5 +98,6 @@ variable. See [`setup-answers.example.yml`](setup-answers.example.yml).
 | `HTTP 404` / "not the content API" | You pasted the console URL. Use **Copy API URL** (`https://api-<tenant>.xdr.<region>…`). |
 | "host guard will expect …" | The tenant name isn't in the API host, so the wizard recorded the host part to check against. That's normal. |
 | Branch protection / Environment approvers refused | Private repos need GitHub **Team** or **Enterprise** for these. The wizard says which setting failed; upgrade or make the repo internal/public. |
+| promote fails: "Not Found … get a repository installation" | The promotion App exists but isn't **installed** on this repo: Organization settings → GitHub Apps → the App → Install App → only this repo. The wizard now checks this when you set the App up; `doctor` reports it too. |
 | Merge queue not available | Optional. converge still re-checks change windows before deploying. |
 | "every ring needs at least one tenant" | Each ring needs a tenant before the checks pass — `add-tenant`. |

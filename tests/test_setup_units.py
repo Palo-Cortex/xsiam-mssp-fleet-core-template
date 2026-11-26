@@ -271,3 +271,88 @@ def test_doctor_warns_without_history_boundary_then_ok_after_setup(tmp_path, mon
     from test_setup_wizard_e2e import _answers, _wizard
     _wizard(root, _answers("qa-prod", ["qa", "prod"]), FakeGH())[0].run()
     assert status() == OK
+
+
+# --- promotion App installation check -----------------------------------------
+import shutil as _shutil
+import subprocess as _sp
+
+
+@pytest.mark.skipif(not _shutil.which("openssl"), reason="openssl not installed")
+def test_app_jwt_is_a_valid_rs256_signature(tmp_path):
+    import base64
+    from fleet_setup.gh import app_jwt
+    key, pub = tmp_path / "k.pem", tmp_path / "k.pub"
+    _sp.run(["openssl", "genrsa", "-out", str(key), "2048"], check=True, capture_output=True)
+    _sp.run(["openssl", "rsa", "-in", str(key), "-pubout", "-out", str(pub)], check=True, capture_output=True)
+    tok = app_jwt(123, key, now=1_700_000_000)
+    head, body, sig = tok.split(".")
+    pad = lambda s: s + "=" * (-len(s) % 4)  # noqa: E731
+    claims = json.loads(base64.urlsafe_b64decode(pad(body)))
+    assert claims == {"iat": 1_700_000_000 - 60, "exp": 1_700_000_000 + 540, "iss": "123"}
+    (tmp_path / "sig").write_bytes(base64.urlsafe_b64decode(pad(sig)))
+    v = _sp.run(["openssl", "dgst", "-sha256", "-verify", str(pub), "-signature", str(tmp_path / "sig")],
+                input=f"{head}.{body}".encode(), capture_output=True)
+    assert v.returncode == 0, v.stdout + v.stderr
+
+
+def _app_opener(installed=True, app_status=200):
+    def opener(req, timeout):
+        assert req.get_header("Authorization").startswith("Bearer ")
+        if req.full_url.endswith("/app"):
+            if app_status != 200:
+                raise urllib.error.HTTPError(req.full_url, app_status, "x", {}, None)
+            return _Resp(json.dumps({"slug": "fleet-promote", "client_id": "Iv1abc"}).encode())
+        if installed:
+            return _Resp(b'{"id": 1}')
+        raise urllib.error.HTTPError(req.full_url, 404, "x", {}, None)
+    return opener
+
+
+@pytest.mark.parametrize("installed", [True, False])
+def test_check_app_reports_installation(monkeypatch, installed):
+    from fleet_setup import gh as ghmod
+    monkeypatch.setattr(ghmod, "app_jwt", lambda *a, **k: "jwt")
+    got = ghmod.check_app(1, "k.pem", "acme/fleet", opener=_app_opener(installed))
+    assert got == {"slug": "fleet-promote", "client_id": "Iv1abc", "installed": installed}
+
+
+def test_check_app_rejects_mismatched_key(monkeypatch):
+    from fleet_setup import gh as ghmod
+    monkeypatch.setattr(ghmod, "app_jwt", lambda *a, **k: "jwt")
+    with pytest.raises(ghmod.GhError) as e:
+        ghmod.check_app(1, "k.pem", "acme/fleet", opener=_app_opener(app_status=401))
+    assert e.value.status == 401
+
+
+@pytest.mark.parametrize("host,api", [("github.com", "https://api.github.com"),
+                                      ("acme.ghe.com", "https://api.acme.ghe.com"),
+                                      ("git.acme.local", "https://git.acme.local/api/v3")])
+def test_api_base(host, api):
+    from fleet_setup.gh import api_base
+    assert api_base(host) == api
+
+
+def test_wizard_waits_until_app_is_installed(tmp_path):
+    from fleet_setup.wizard import Wizard
+    answers = iter([""])                    # "Installed it?" -> Enter (check again)
+    gh = FakeGH()
+    gh.repo = "acme-co/fleet"
+    wiz = Wizard(tmp_path, UI(out=io.StringIO(), inp=lambda p: next(answers)), gh)
+    seq = iter([{"slug": "fleet-promote", "client_id": "Iv1", "installed": False},
+                {"slug": "fleet-promote", "client_id": "Iv1", "installed": True}])
+    wiz.check_app = lambda *a: next(seq)
+    info = wiz._confirm_app_installed("1", tmp_path / "k.pem")
+    out = wiz.ui.out.getvalue()
+    assert info["installed"] and "/apps/fleet-promote/installations/new" in out
+
+
+def test_doctor_flags_configured_but_uninstalled_app(tmp_path):
+    root = scratch_fleet(tmp_path)
+    gh = FakeGH()
+    gh.set_variable("FLEET_APP_ID", "5928393")
+    gh.set_secret("FLEET_APP_PRIVATE_KEY", "k")
+    gh.app_installed = False
+    assert "promotion App installed" in _fails(root, gh)
+    gh.app_installed = True
+    assert "promotion App installed" not in _fails(root, gh)

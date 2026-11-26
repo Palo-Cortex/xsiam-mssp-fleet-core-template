@@ -163,6 +163,14 @@ class GitHub:
     def set_variable(self, name, value):
         self.run("variable", "set", name, *self._r(), "--body", str(value))
 
+    def org_app_installations(self, org):
+        """{app_id: installation} for an organisation (needs org admin), or
+        None when they can't be listed."""
+        ok, res = self.try_api("GET", f"orgs/{org}/installations?per_page=100")
+        if not ok:
+            return None
+        return {i.get("app_id"): i for i in res.get("installations", [])}
+
     def variables(self):
         try:
             out = self.run("variable", "list", *self._r(), "--json", "name,value")
@@ -256,3 +264,71 @@ class GitHub:
     def run_jobs(self, run_id):
         out = self.run("run", "view", str(run_id), *self._r(), "--json", "jobs")
         return json.loads(out or "{}").get("jobs", [])
+
+
+# --- GitHub App self-check (wizard) ------------------------------------------
+def api_base(host):
+    """REST API root for github.com, <company>.ghe.com, or Enterprise Server."""
+    host = (host or "github.com").lower()
+    if host == "github.com":
+        return "https://api.github.com"
+    if host.endswith(".ghe.com"):
+        return f"https://api.{host}"
+    return f"https://{host}/api/v3"
+
+
+def _b64url(data):
+    import base64
+    return base64.urlsafe_b64encode(data).rstrip(b"=").decode()
+
+
+def app_jwt(app_id, pem_path, now=None):
+    """A 9-minute GitHub App JWT, signed with `openssl` (no Python crypto
+    dependency). Raises GhError if openssl is missing or the key is unusable."""
+    import time
+    now = int(now or time.time())
+    head = _b64url(json.dumps({"alg": "RS256", "typ": "JWT"}).encode())
+    body = _b64url(json.dumps({"iat": now - 60, "exp": now + 540, "iss": str(app_id)}).encode())
+    signing_input = f"{head}.{body}".encode()
+    if not shutil.which("openssl"):
+        raise GhError("openssl isn't installed, so the App can't be checked from here")
+    p = subprocess.run(["openssl", "dgst", "-sha256", "-sign", str(pem_path)],
+                       input=signing_input, capture_output=True)
+    if p.returncode != 0:
+        raise GhError(f"couldn't sign with that key: {p.stderr.decode(errors='replace').strip()}")
+    return f"{head}.{body}.{_b64url(p.stdout)}"
+
+
+def check_app(app_id, pem_path, repo, host="github.com", opener=None):
+    """What GitHub says about this App and repo, using the App's own key:
+    {"slug", "client_id", "installed": bool}. Raises GhError when the App
+    ID/key pair is rejected or GitHub can't be reached."""
+    import urllib.error
+    import urllib.request
+    open_ = opener or urllib.request.urlopen
+    token = app_jwt(app_id, pem_path)
+    base = api_base(host)
+
+    def get(path):
+        req = urllib.request.Request(base + path, headers={
+            "Authorization": f"Bearer {token}", "Accept": "application/vnd.github+json"})
+        with open_(req, timeout=20) as resp:
+            return json.loads(resp.read().decode() or "{}")
+
+    try:
+        app = get("/app")
+    except urllib.error.HTTPError as e:
+        if e.code == 401:
+            raise GhError("GitHub rejected the App ID / private key pair — check the App ID "
+                          "matches the App the .pem was generated for", 401)
+        raise GhError(f"GitHub returned HTTP {e.code} for the App", e.code)
+    except urllib.error.URLError as e:
+        raise GhError(f"can't reach {base}: {e.reason}")
+    try:
+        get(f"/repos/{repo}/installation")
+        installed = True
+    except urllib.error.HTTPError as e:
+        if e.code != 404:
+            raise GhError(f"GitHub returned HTTP {e.code} checking the installation", e.code)
+        installed = False
+    return {"slug": app.get("slug"), "client_id": app.get("client_id"), "installed": installed}

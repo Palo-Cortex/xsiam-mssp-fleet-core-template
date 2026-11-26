@@ -302,10 +302,23 @@ class Doctor:
                      "on" if mq else "off — converge still re-checks change windows"))
 
         vars_ = self.gh.variables()
-        app = "FLEET_APP_ID" in vars_ and "FLEET_APP_PRIVATE_KEY" in self.gh.secret_names()
+        app = "FLEET_APP_ID" in vars_ and (not admin or "FLEET_APP_PRIVATE_KEY" in self.gh.secret_names())
         out.append(r(OK if app else WARN, "promote workflow can trigger ring-gate (GitHub App)",
                      "" if app else "promote PRs will need ring-gate re-triggered by hand",
                      "" if app else "wizard step 'Who approves changes' sets up the App"))
+        if app and hasattr(self.gh, "org_app_installations"):
+            installs = self.gh.org_app_installations(meta["owner"])
+            app_id = str(vars_.get("FLEET_APP_ID"))
+            if installs is None:
+                out.append(r(SKIP, "promotion App installed", "can't list this owner's App installations"))
+            elif any(str(k) == app_id for k in installs):
+                out.append(r(OK, "promotion App installed"))
+            else:
+                out.append(r(FAIL, "promotion App installed",
+                             f"App {app_id} is configured but not installed — promote fails with "
+                             f"'Not Found … repository installation'",
+                             f"Organization settings → GitHub Apps → your promote App → Install App "
+                             f"→ only {meta['name_with_owner']}"))
         live = vars_.get("FLEET_LIVE") == "true"
         out.append(r(INFO, "live deployments", "ON — merges deploy to tenants" if live else
                      "off — converge is dry-run only (set FLEET_LIVE=true to go live)"))

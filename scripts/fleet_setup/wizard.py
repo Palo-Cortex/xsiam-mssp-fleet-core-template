@@ -139,7 +139,7 @@ class Wizard:
                 self._connect()
             n = order.index(step) + 1
             title = dict(STEPS)[step]
-            if not only and step in self.state["done"] and step not in ("verify", "live"):
+            if not only and step in self.state["done"] and not self._redo(step):
                 self.ui.say(dim(f"  ✓ step {n}/{total} · {title} (done)"))
                 continue
             self.ui.step(n, total, title)
@@ -149,6 +149,21 @@ class Wizard:
             self.ui.say()
             self.ui.say(bold("Setup complete.") + " Re-check any time with: "
                         "python scripts/setup_wizard.py doctor")
+
+    def _unsaved_changes(self):
+        """Files changed since the last save (wizard progress excluded)."""
+        return [ln for ln in self.git("status", "--porcelain", check=False).splitlines()
+                if ln.strip() and STATE_DIR not in ln]
+
+    def _redo(self, step):
+        """Should a finished step run again on resume? check + save only when
+        something changed since the last save (e.g. after --step org);
+        go-live always (it reports where things stand)."""
+        if step == "live":
+            return True
+        if step in ("verify", "publish"):
+            return bool(self._unsaved_changes())
+        return False
 
     # --- 1 preflight ---------------------------------------------------------
     def step_preflight(self):
@@ -693,19 +708,24 @@ without it you re-trigger ring-gate on promote PRs by hand.
                                  "see the message above"))
 
         last = self.rings()[-1]
-        ui.explain(f"""
+        already = bool(((config.policies(self.repo).get("rings") or {}).get(last) or {}).get("require_lock"))
+        if not already:
+            ui.explain(f"""
 LOCKING records each pinned pack's download URL and checksum, so {last} only
 ever installs the exact bytes you tested. Strongly recommended.
 """)
         if not self.network:
             ui.info("offline: artifact locking skipped")
-        elif ui.confirm("verify.lock", f"Lock artifacts now and require locks in {last}?", True):
+        elif already and self.script("lock.py", "--check")[0] == 0:
+            ui.ok(f"artifacts already locked; {last} requires locks")
+        elif already or ui.confirm("verify.lock", f"Lock artifacts now and require locks in {last}?", True):
             code, msg = self.script("lock.py", "--write")
             if code == 0:
                 self._set_require_lock(last, True)
                 ui.ok(f"artifacts locked; {last} requires locks")
             else:
-                ui.warn("couldn't lock every pack (see below); require_lock left off:\n      "
+                state = "still required" if already else "left off"
+                ui.warn(f"couldn't lock every pack (see below); require_lock {state}:\n      "
                         + "\n      ".join(msg.splitlines()[-4:]))
         code, msg = self.script("lock.py", "--check")
         if code:

@@ -333,3 +333,56 @@ def test_rerunning_org_removes_a_legacy_parent_ring(tmp_path, monkeypatch):
     assert not (root / "fleet" / "pins" / "mssp.yml").exists()
     assert "mssp" not in config.policies(root)["rings"]
     assert config.workflow_choices(root)["converge"] == ["dev", "qa", "prod"]
+
+
+def test_resume_after_setup_goes_straight_to_go_live(tmp_path, monkeypatch):
+    """Found in real testing: resuming a finished setup re-ran the check step
+    and re-asked the lock question. With nothing unsaved, it must go to step 9."""
+    monkeypatch.setenv("WIZ_TEST_KEY", "k")
+    root = scratch_fleet(tmp_path)
+    answers = _answers("qa-prod", ["qa", "prod"])
+    gh = FakeGH()
+    _wizard(root, answers, gh)[0].run()
+
+    wiz, out = _wizard(root, answers, gh)
+    wiz.run()
+    text = out.getvalue()
+    assert "step 6/9 · Check everything before saving (done)" in text
+    assert "Step 6/9" not in text and "Lock artifacts now" not in text
+    assert "Step 9/9 · Go live" in text
+
+
+def test_changes_after_setup_are_checked_and_saved_on_resume(tmp_path, monkeypatch):
+    """--step owners after setup changes files; a plain re-run must re-check
+    and SAVE them (via a PR, main being protected) — not skip as 'done'."""
+    monkeypatch.setenv("WIZ_TEST_KEY", "k")
+    root = scratch_fleet(tmp_path)
+    answers = _answers("qa-prod", ["qa", "prod"])
+    gh = FakeGH()
+    _wizard(root, answers, gh)[0].run()
+
+    answers["owners"]["approvers"] = "@bob"
+    _wizard(root, answers, gh)[0].run(only="owners")
+    assert git(root, "status", "--porcelain")          # CODEOWNERS changed, unsaved
+
+    wiz, out = _wizard(root, answers, gh)
+    wiz.run()
+    assert "Step 6/9" in out.getvalue() and "Step 7/9" in out.getvalue()
+    assert gh.prs, "the change must be saved through a pull request"
+    assert git(root, "status", "--porcelain") == ""
+
+
+def test_verify_does_not_reask_lock_when_already_locked(tmp_path, monkeypatch):
+    import io
+    from pathlib import Path
+    root = scratch_fleet(tmp_path)
+    pol = root / "fleet" / "policies.yml"
+    pol.write_text(pol.read_text().replace("require_lock: false", "require_lock: true"))
+    (root / "fleet" / "artifacts.lock.yml").write_text(yaml.safe_dump({"artifacts": {
+        p: {str(v): {"zip_url": "u", "sha256": "s"}}
+        for ring in ("dev", "qa", "prod") for p, v in config.pins(root, ring).items()}}))
+    ui = UI(out=io.StringIO(), inp=lambda p="": (_ for _ in ()).throw(AssertionError(f"asked: {p}")))
+    wiz = Wizard(root, ui, FakeGH(), catalog_loader=lambda: CATALOG, network=True)
+    monkeypatch.setattr(wiz, "script", lambda *a: (0, "ok") if a[0] != "deploy_tenant.py" else (0, "plan"))
+    wiz.step_verify()
+    assert "artifacts already locked" in ui.out.getvalue()

@@ -144,8 +144,8 @@ Composition decides membership; pins only supply versions. So removal is a
    (fleet-wide), a group's `extras:`, or the tenant's `extras:`. That alone is
    what removes it: on the next `converge`, the pack drops out of the resolved
    set, becomes an orphan, and is deleted via the XSIAM pack-delete API — but
-   only if this fleet manages it (MSSP-authored, or ever pinned in
-   `fleet/pins/`) and it isn't protected (customer prefix, the tenant's
+   only if this fleet manages it (MSSP-authored, or pinned in `fleet/pins/`
+   since the fleet was set up) and it isn't protected (customer prefix, the tenant's
    `custom:`, `defaults.yml › never_delete`). Anything else is never deleted.
 2. Then clean up its now-unused entries in `fleet/pins/<ring>.yml`. This is
    hygiene only — a pin nothing composes is never read and deploys nothing.

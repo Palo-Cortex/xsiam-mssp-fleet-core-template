@@ -255,3 +255,19 @@ def test_pem_unattended_folder_with_no_key_fails_clearly(tmp_path, monkeypatch):
                       home=tmp_path, monkeypatch=monkeypatch)
     with pytest.raises(AnswerError, match="no .pem file"):
         wiz._ask_pem("fleet-promote")
+
+
+def test_doctor_warns_without_history_boundary_then_ok_after_setup(tmp_path, monkeypatch):
+    from fleet_setup.checks import WARN, OK
+    root = scratch_fleet(tmp_path)
+
+    def status():
+        res = [x for _s, rs in Doctor(root, gh=None, offline=True).run() for x in rs
+               if x.title.startswith("orphan deletion only touches")]
+        return res[0].status
+
+    assert status() == WARN                       # template history, no setup yet
+    monkeypatch.setenv("WIZ_TEST_KEY", "k")
+    from test_setup_wizard_e2e import _answers, _wizard
+    _wizard(root, _answers("qa-prod", ["qa", "prod"]), FakeGH())[0].run()
+    assert status() == OK

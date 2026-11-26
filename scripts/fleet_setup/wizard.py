@@ -28,7 +28,7 @@ from pathlib import Path
 
 from . import config, xsiam
 from .checks import Doctor, render
-from .gh import GhError
+from .gh import GhError, check_app
 from .ui import AnswerError, bold, dim
 
 STATE_DIR = ".fleet-setup"
@@ -58,6 +58,7 @@ class Wizard:
         self.ui = ui
         self.gh = gh
         self.check_credentials = check_credentials or xsiam.check_credentials
+        self.check_app = check_app
         self.catalog_loader = catalog_loader
         self.git = git or self._git
         self.python = python or sys.executable
@@ -641,11 +642,46 @@ without it you re-trigger ring-gate on promote PRs by hand.
 """)
         app_id = ui.ask("app.id", "App ID", validate=lambda v: None if v.isdigit() else "a number")
         pem = self._ask_pem(name)
+        info = self._confirm_app_installed(app_id, pem)
         self.gh.set_variable("FLEET_APP_ID", app_id)
+        if info and info.get("client_id"):
+            self.gh.set_variable("FLEET_APP_CLIENT_ID", info["client_id"])
         self.gh.set_secret("FLEET_APP_PRIVATE_KEY", pem.read_text())
-        ui.ok("stored FLEET_APP_ID and FLEET_APP_PRIVATE_KEY")
+        ui.ok("stored FLEET_APP_ID" + (", FLEET_APP_CLIENT_ID" if info and info.get("client_id") else "")
+              + " and FLEET_APP_PRIVATE_KEY")
         ui.info(f"you can now delete {pem}")
         self.a["app"] = "configured"
+
+    def _confirm_app_installed(self, app_id, pem):
+        """Ask GitHub, as the App, whether it is installed on this repo; if not,
+        show the install link and wait. Returns check_app()'s answer, or None
+        when it can't be checked from here (the setup still continues)."""
+        ui = self.ui
+        while True:
+            try:
+                info = self.check_app(app_id, pem, self.gh.repo, getattr(self.gh, "host", None) or "github.com")
+            except GhError as e:
+                ui.warn(f"couldn't check the App with GitHub ({str(e).splitlines()[0]})")
+                if e.status == 401:
+                    raise Abort("the App ID and private key don't belong together — re-run "
+                                "this step with the App ID shown on the App's settings page")
+                ui.info("continuing; if promote later fails with 'Not Found … repository "
+                        "installation', install the App on this repo")
+                return None
+            if info["installed"]:
+                ui.ok(f"App {info['slug']} is installed on {self.gh.repo}")
+                return info
+            link = f"{self.gh.server_url()}/apps/{info['slug']}/installations/new"
+            ui.fail(f"App {info['slug']} is NOT installed on {self.gh.repo} yet")
+            ui.explain(f"""
+  Install it:  {link}
+  → choose {self.gh.repo.split('/')[0]} → "Only select repositories" → {self.gh.repo.split('/')[1]} → Install
+""")
+            if ui.unattended:
+                raise AnswerError(f"the App isn't installed on {self.gh.repo}: {link}")
+            if not ui.confirm("app.installed", "Installed it? (Enter to check again, n to skip)", True):
+                ui.warn("skipped — promote PRs will fail until the App is installed on this repo")
+                return info
 
     def _ask_pem(self, app_name):
         """The App's private-key file. Accepts the file itself or the folder it

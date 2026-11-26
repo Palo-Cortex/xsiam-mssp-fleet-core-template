@@ -386,3 +386,33 @@ def test_verify_does_not_reask_lock_when_already_locked(tmp_path, monkeypatch):
     monkeypatch.setattr(wiz, "script", lambda *a: (0, "ok") if a[0] != "deploy_tenant.py" else (0, "plan"))
     wiz.step_verify()
     assert "artifacts already locked" in ui.out.getvalue()
+
+
+def test_app_setup_checks_installation_and_stores_client_id(tmp_path, monkeypatch):
+    monkeypatch.setenv("WIZ_TEST_KEY", "k")
+    root = scratch_fleet(tmp_path)
+    pem = tmp_path / "app.pem"
+    pem.write_text("-----BEGIN RSA PRIVATE KEY-----\nx\n-----END RSA PRIVATE KEY-----\n")
+    answers = _answers("qa-prod", ["qa", "prod"])
+    answers["app"] = {"setup": True, "id": "5928393", "private_key_path": str(pem)}
+    gh = FakeGH()
+    wiz, out = _wizard(root, answers, gh)
+    wiz.check_app = lambda *a: {"slug": "fleet-promote", "client_id": "Iv23abc", "installed": True}
+    wiz.run()
+    assert gh.vars["FLEET_APP_ID"] == "5928393" and gh.vars["FLEET_APP_CLIENT_ID"] == "Iv23abc"
+    assert "App fleet-promote is installed" in out.getvalue()
+    assert not gh.actions_prs                  # App configured -> no GITHUB_TOKEN PR fallback
+
+
+def test_app_not_installed_stops_an_unattended_run_with_the_link(tmp_path, monkeypatch):
+    monkeypatch.setenv("WIZ_TEST_KEY", "k")
+    root = scratch_fleet(tmp_path)
+    pem = tmp_path / "app.pem"
+    pem.write_text("-----BEGIN RSA PRIVATE KEY-----\nx\n-----END RSA PRIVATE KEY-----\n")
+    answers = _answers("qa-prod", ["qa", "prod"])
+    answers["app"] = {"setup": True, "id": "1", "private_key_path": str(pem)}
+    wiz, _ = _wizard(root, answers, FakeGH())
+    wiz.check_app = lambda *a: {"slug": "fleet-promote", "client_id": "Iv1", "installed": False}
+    from fleet_setup.ui import AnswerError
+    with pytest.raises(AnswerError, match="installations/new"):
+        wiz.run()

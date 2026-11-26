@@ -9,7 +9,8 @@
 # TOKEN: PRs opened with the default GITHUB_TOKEN do NOT trigger other
 # workflows, so ring-gate would never report and the PR would sit blocked. Set
 # up a GitHub App (contents + pull-requests: write) and store
-#   vars.FLEET_APP_ID  and  secrets.FLEET_APP_PRIVATE_KEY
+#   vars.FLEET_APP_CLIENT_ID (or FLEET_APP_ID)  and  secrets.FLEET_APP_PRIVATE_KEY
+# and INSTALL the App on this repository (the setup wizard checks this).
 # — the PR is then opened as the App and ring-gate runs normally. Without them
 # the workflow still opens the PR but warns that ring-gate must be re-triggered
 # (push an empty commit, or close + reopen the PR).
@@ -87,11 +88,18 @@ jobs:
 
       - name: GitHub App token (so ring-gate runs on the PR)
         id: app
-        if: vars.FLEET_APP_ID != ''
+        if: vars.FLEET_APP_CLIENT_ID != '' || vars.FLEET_APP_ID != ''
         uses: actions/create-github-app-token@f418cff399f7aef4c2f0ad47e25ca7a6abbdd6fc # v3.4.0
         with:
-          app-id: ${{ vars.FLEET_APP_ID }}
+          # GitHub accepts the App's Client ID or its numeric App ID here.
+          client-id: ${{ vars.FLEET_APP_CLIENT_ID || vars.FLEET_APP_ID }}
           private-key: ${{ secrets.FLEET_APP_PRIVATE_KEY }}
+
+      - name: Explain an App token failure
+        if: failure() && steps.app.outcome == 'failure'
+        run: |
+          echo "::error::The promotion GitHub App couldn't get a token for this repository. Most often it isn't INSTALLED here: Organization (or account) settings → GitHub Apps → your promote App → Install App → only this repository. Also check FLEET_APP_PRIVATE_KEY belongs to that App. Then re-run this workflow."
+          exit 1
 
       - name: Open PR
         uses: peter-evans/create-pull-request@3ffccacd46053766916f087ce41d627c0b8cf2d1 # v8.1.3
@@ -108,6 +116,6 @@ jobs:
           labels: promotion
 
       - name: Warn when ring-gate won't trigger
-        if: vars.FLEET_APP_ID == ''
+        if: vars.FLEET_APP_CLIENT_ID == '' && vars.FLEET_APP_ID == ''
         run: |
           echo "::warning::PR opened with GITHUB_TOKEN — GitHub won't start ring-gate for it. Configure vars.FLEET_APP_ID + secrets.FLEET_APP_PRIVATE_KEY, or re-trigger the check (close/reopen the PR)."

@@ -32,6 +32,7 @@ class FakeGH:
         self.actions_prs = False
         self.workflow_runs = []
         self.prs = []
+        self.app_installed = True    # org App installations include FLEET_APP_ID
 
     @staticmethod
     def available():
@@ -90,6 +91,11 @@ class FakeGH:
 
     def variables(self):
         return dict(self.vars)
+
+    def org_app_installations(self, org):
+        if self.app_installed and "FLEET_APP_ID" in self.vars:
+            return {int(self.vars["FLEET_APP_ID"]): {"app_id": int(self.vars["FLEET_APP_ID"])}}
+        return {}
 
     def ensure_label(self, name, color, description):
         self.labels.add(name)
